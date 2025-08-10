@@ -90,6 +90,7 @@ class BattleWithMonsterHandler
 
         Redis::hset("battle:$battleId:stamina_data", "character:$characterId", json_encode($characterStaminaData));
 
+
         // Enviar resposta para o cliente com dados da batalha criada
         $connection->send(json_encode([
             'event' => 'unity-response',
@@ -104,5 +105,13 @@ class BattleWithMonsterHandler
         ]));
 
         Log::info("Battle $battleId created with Goblin for user $userId.");
+
+        // Enviar mensagem para o cliente pedindo para se inscrever no canal da batalha
+        $connection->send(json_encode([
+            'event' => 'subscribeMe',
+            'data' => [
+                'channel' => "battle.$battleId"
+            ]
+        ]));
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Battle\BattleBroadcaster;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Laravel\Reverb\Contracts\Connection;
@@ -9,8 +10,6 @@ use Laravel\Reverb\Contracts\Connection;
 class UnityConnectionRegistry
 {
     protected static array $connectionsByUser = [];
-    protected const REDIS_KEY = 'unity_connections';
-    protected const REDIS_CHANNEL = 'unity:messages';
 
     public static function register(string $userId, Connection $connection): void
     {
@@ -18,13 +17,6 @@ class UnityConnectionRegistry
 
         // Cache local da conexão
         self::$connectionsByUser[$userId] = $connection;
-
-        // Salva metadados no Redis (opcional, pode ser útil para monitoramento)
-        Redis::hset(self::REDIS_KEY, $userId, json_encode([
-            'connection_id' => $connection->id(),
-            'server' => gethostname(),
-            'registered_at' => now()->toISOString()
-        ]));
     }
 
     public static function get(string $userId): ?Connection
@@ -38,9 +30,6 @@ class UnityConnectionRegistry
             if ($conn === $connection) {
                 Log::info("Removing connection for user $userId (ID: " . $connection->id() . ")");
                 unset(self::$connectionsByUser[$userId]);
-
-                // Remove do Redis também
-                Redis::hdel(self::REDIS_KEY, $userId);
                 break;
             }
         }
@@ -52,12 +41,13 @@ class UnityConnectionRegistry
             Log::info("sendToUser: User $userId is local. Sending message directly.");
             self::$connectionsByUser[$userId]->send(json_encode($payload));
         } else {
-            Log::info("sendToUser: User $userId NOT found locally. Publishing message via Redis.");
-            Redis::publish(self::REDIS_CHANNEL, json_encode([
-                'user_id' => $userId,
-                'payload' => $payload
-            ]));
+            Log::info("sendToUser: User $userId NOT found locally.");
         }
+    }
+
+    public static function broadcastToBattle(string $battleId, array $payload): void
+    {
+        BattleBroadcaster::broadcastToBattle($battleId, $payload);
     }
 
     public static function logLocalConnections(): void
@@ -76,10 +66,8 @@ class UnityConnectionRegistry
     public static function all(): array
     {
         Log::info("Current local connections: " . json_encode(array_keys(self::$connectionsByUser)));
-        $allConnections = Redis::hgetall(self::REDIS_KEY);
         return [
             'local' => self::$connectionsByUser,
-            'global' => $allConnections
         ];
     }
 
@@ -89,8 +77,6 @@ class UnityConnectionRegistry
         foreach (self::$connectionsByUser as $userId => $connection) {
             Log::info("  User: {$userId} → Connection ID: " . $connection->id());
         }
-        $globalConnections = Redis::hgetall(self::REDIS_KEY);
-        Log::info('[UnityConnectionRegistry::dump] Global Redis connections: ' . json_encode($globalConnections));
         Log::info('[UnityConnectionRegistry::dump] End of dump.');
     }
 }
