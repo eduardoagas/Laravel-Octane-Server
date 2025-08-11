@@ -19,34 +19,41 @@ class BattleWithMonsterHandler
 
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
     {
-        // Buscar o personagem do usuário na sessão Redis
-        $characterJson = collect(Redis::keys("character_session:*"))
-            ->map(fn($key) => Redis::hgetall($key))
-            ->filter()
-            ->firstWhere('user_id', (string) $userId);
+        // 1. Busca os dados da sessão pelo token
+        $sessionData = Redis::hgetall("session:$token");
+        $characterId = $sessionData['character_id'] ?? null;
 
-        Log::info("CharacterJson = " . json_encode($characterJson));
-
-        if (!$characterJson) {
-            $connection->send(json_encode(['error' => 'Character not found in session']));
+        if (!$characterId) {
+            $connection->send(json_encode(['error' => 'Character ID not found in session']));
+            Log::warning("No character_id found in session for user $userId and token $token");
             return;
         }
 
-        // Criar ID único para a batalha
-        $battleId = uniqid('battle_', true);
-        $characterId = $characterJson['id'];
+        // 2. Busca os dados do personagem pela key específica
+        $characterJson = Redis::hgetall("character_session:$characterId");
 
-        // Registrar usuário e personagem na batalha
+        if (!$characterJson || empty($characterJson)) {
+            $connection->send(json_encode(['error' => 'Character data not found']));
+            Log::warning("Character data missing for character_id $characterId");
+            return;
+        }
+
+        Log::info("CharacterJson = " . json_encode($characterJson));
+
+        // 3. Criar ID único para a batalha
+        $battleId = uniqid('battle_', true);
+
+        // 4. Registrar usuário e personagem na batalha
         Redis::sadd("battle:$battleId:users", $userId);
         Redis::hset("battle:$battleId:characters", $characterId, json_encode($characterJson));
 
-        // Vincular battle_instance_id na sessão
+        // 5. Vincular battle_instance_id na sessão
         Redis::hset("session:$token", 'battle_instance_id', $battleId);
 
-        // Registra batalha ativa no conjunto global
+        // 6. Registra batalha ativa no conjunto global
         Redis::sadd('battles:active', $battleId);
 
-        // Criar monstro
+        // 7. Criar monstro
         $goblin = [
             'monster_id' => 123,
             'name' => "Goblin",
@@ -63,12 +70,12 @@ class BattleWithMonsterHandler
 
         $monsterInstanceId = 1;
         $monsterInstanceIdstr = (string)$monsterInstanceId;
-
+        $goblin['instanceId'] = $monsterInstanceIdstr;
         Redis::hset("battle:$battleId:monsters", $monsterInstanceIdstr, json_encode($goblin));
 
         $now = now()->timestamp;
 
-        // Inicializar stamina
+        // 8. Inicializar stamina para monstro e personagem
         $monsterStaminaData = $this->staminaService->initializeStamina(
             $now,
             $goblin['stamina'],
@@ -78,12 +85,12 @@ class BattleWithMonsterHandler
 
         $characterStaminaData = $this->staminaService->initializeStamina(
             $now,
-            (int) $characterJson['stamina'],
-            (int) $characterJson['agility']
+            (int) ($characterJson['stamina'] ?? 0),
+            (int) ($characterJson['agility'] ?? 0)
         );
         Redis::hset("battle:$battleId:stamina_data", "character:$characterId", json_encode($characterStaminaData));
 
-        // Resposta inicial ao cliente
+        // 9. Resposta inicial ao cliente
         $connection->send(json_encode([
             'event' => 'unity-response',
             'character' => [
@@ -96,7 +103,7 @@ class BattleWithMonsterHandler
             ]
         ]));
 
-        // Pedido para assinar o canal da batalha
+        // 10. Pedido para assinar o canal da batalha
         $connection->send(json_encode([
             'event' => 'subscribeMe',
             'data' => [
@@ -104,15 +111,15 @@ class BattleWithMonsterHandler
             ]
         ]));
 
-        // 🔹 Disparar updateYourself inicial
+        // 11. Disparar updateYourself inicial
         BattleBroadcaster::broadcastToBattle($battleId, [
             'event' => 'updateYourself',
             'data' => [
                 'players' => [
                     [
                         'instanceId' => (string)$characterId,
-                        'currentHp' => (int)$characterJson['hp'],
-                        'currentStamina' => (int)$characterJson['stamina'],
+                        'currentHp' => (int) ($characterJson['hp'] ?? 0),
+                        'currentStamina' => (int) ($characterJson['stamina'] ?? 0),
                         'nstatus' => 'none',
                         'pstatus' => 'none'
                     ]

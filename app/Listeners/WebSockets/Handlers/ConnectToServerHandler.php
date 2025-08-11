@@ -85,7 +85,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
         // 5) Responde ao cliente
         $connection->send(json_encode([
             'event'     => 'character_connected',
-            'character' => $characterData,
+            'data' => ['character' => $characterData],
         ]));
     }
 }

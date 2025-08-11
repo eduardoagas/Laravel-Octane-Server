@@ -77,7 +77,7 @@ class BattleActions
         }
 
         // Atualiza stamina no serviço (persistência e controle global)
-        StaminaService::consumeStamina($battleId, (string)$monster['id'], $staminaCost, 'monster');
+        StaminaService::consumeStamina($battleId, (string)$monster['instanceId'], $staminaCost, 'monster');
     }
 
     protected static function wait(array &$monster): void
