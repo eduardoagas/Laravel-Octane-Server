@@ -39,13 +39,19 @@ class BattleActions
         }
 
         BattleBroadcaster::broadcastToBattle($battleId, [
-            'event' => 'battle_action',
-            'data' => [
-                'monster' => $monster,
-                'action' => $action,
-                'targetCharacter' => $targetCharacter,
+            'monster' => $monster,
+            'action' => $action,
+            'targetCharacter' => $targetCharacter,
+        ], 'battle_action');
+
+        BattleBroadcaster::broadcastToBattle($battleId, [
+            'players' => [
+                [
+                    'instanceId' => (string) $targetCharacter['id'],
+                    'currentHp' => (int) $targetCharacter['hp'],
+                ],
             ],
-        ]);
+        ], 'updateYourself');
     }
 
     protected static function attack(array &$monster, array &$targetCharacter, string $battleId): void

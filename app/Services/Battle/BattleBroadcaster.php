@@ -10,16 +10,9 @@ use App\Services\UnityConnectionRegistry;
 
 class BattleBroadcaster
 {
-    /**
-     * Envia uma mensagem para todos os usuários conectados à batalha.
-     *
-     * @param string $battleId
-     * @param array $payload Dados que serão enviados no broadcast
-     * @return void
-     */
-    public static function broadcastToBattle(string $battleId, array $payload): void
+    public static function broadcastToBattle(string $battleId, array $payload, string $eventName = 'battle_event'): void
     {
         Log::info("BROADCASTING to battle the payload", [$payload]);
-        broadcast(new BattleEvent($battleId, $payload))->toOthers();
+        broadcast(new BattleEvent($battleId, $payload, $eventName));
     }
 }

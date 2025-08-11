@@ -1,0 +1,42 @@
+BattleBroadcaster: :broadcastToBattle($battleId,
+[
+    'event' => 'updateYourself',
+    'data' => [
+        'enemies' => [
+            [
+                'instanceId' => 'enemy_1',
+                'nstatus' => 'poisoned',
+                'isAlive' => true,
+            ],
+            [
+                'instanceId' => 'enemy_2',
+                'nstatus' => 'none',
+                'isAlive' => false,
+            ],
+        ],
+        'players' => [
+            [
+                'instanceId' => 'player_1',
+                'currentHp' => 85,
+                'currentStamina' => 40,
+                'nstatus' => 'none',
+                'pstatus' => 'blessed',
+            ],
+            [
+                'instanceId' => 'player_2',
+                'currentHp' => 60,
+                'currentStamina' => 20,
+                'nstatus' => 'burned',
+                'pstatus' => 'none',
+            ],
+        ],
+        'general' => [
+            'actionInfoUse' => 'Fireball',
+            'actionInfoResult' => 'enemy_2 was defeated',
+            'globalMessages' => [
+                'Battle started!',
+                'player_1 used Fireball!',
+            ],
+        ],
+    ],
+]);
