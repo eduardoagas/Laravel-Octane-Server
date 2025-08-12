@@ -50,8 +50,6 @@ class BattleWithMonsterHandler
         // 5. Vincular battle_instance_id na sessão
         Redis::hset("session:$token", 'battle_instance_id', $battleId);
 
-        // 6. Registra batalha ativa no conjunto global
-        Redis::sadd('battles:active', $battleId);
 
         // 7. Criar monstro
         $goblin = [
@@ -110,36 +108,6 @@ class BattleWithMonsterHandler
                 'channel' => "battle.$battleId"
             ]
         ]));
-
-        // 11. Disparar updateYourself inicial
-        BattleBroadcaster::broadcastToBattle($battleId, [
-            'event' => 'updateYourself',
-            'data' => [
-                'players' => [
-                    [
-                        'instanceId' => (string)$characterId,
-                        'currentHp' => (int) ($characterJson['hp'] ?? 0),
-                        'currentStamina' => (int) ($characterJson['stamina'] ?? 0),
-                        'nstatus' => 'none',
-                        'pstatus' => 'none'
-                    ]
-                ],
-                'enemies' => [
-                    [
-                        'instanceId' => $monsterInstanceIdstr,
-                        'nstatus' => 'none',
-                        'isAlive' => true
-                    ]
-                ],
-                'general' => [
-                    'actionInfoUse' => 'Battle start',
-                    'actionInfoResult' => '',
-                    'globalMessages' => [
-                        'Battle created with Goblin!'
-                    ]
-                ]
-            ]
-        ]);
 
         Log::info("Battle $battleId created and updateYourself sent for user $userId.");
     }

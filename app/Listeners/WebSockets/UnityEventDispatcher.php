@@ -21,6 +21,7 @@ class UnityEventDispatcher
             'connect_to_server' => \App\Listeners\WebSockets\Handlers\ConnectToServerHandler::class,
             'battle_with_monster' => \App\Listeners\WebSockets\Handlers\BattleWithMonsterHandler::class,
             'use_skill' => \App\Listeners\WebSockets\Handlers\UseSkillHandler::class,
+            'subscribeConfirmed' => \App\Listeners\WebSockets\Handlers\SubscribeConfirmedHandler::class,
             // adicionar os demais aqui...
         ];
     }
