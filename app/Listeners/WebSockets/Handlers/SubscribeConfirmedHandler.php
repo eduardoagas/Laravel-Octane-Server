@@ -26,6 +26,7 @@ class SubscribeConfirmedHandler implements HandlesUnityEvent
 
         // Extraia o battleId do canal (ex: "battle.battle_abc123" -> "battle_abc123")
         if (preg_match('/^battle\.(.+)$/', $channel, $matches)) {
+            Log::info("MATCHED");
             $battleId = $matches[1];
             // Registrar batalha como ativa agora que cliente está inscrito
             Redis::sadd('battles:active', $battleId);
@@ -38,18 +39,22 @@ class SubscribeConfirmedHandler implements HandlesUnityEvent
                 Redis::hget("battle:$battleId:stamina_data", "character:$characterId"),
                 true
             );
-
-            BattleBroadcaster::broadcastToBattle($battleId, [
+            $payloadArray = [
                 'players' => [
                     [
                         'instanceId' => (string)$characterId,
                         'currentHp' => (int) ($characterJson['hp'] ?? 0),
                         'staminaData' => $currentCharacterStaminaData,
-                        'nstatus' => 'none',
-                        'pstatus' => 'none'
-                    ]
+                    ],
                 ],
-            ], 'updateYourself');
+            ];
+            $jsonPayload = json_encode($payloadArray);
+
+            // Loga o tamanho em bytes
+            Log::info('Tamanho do payload JSON para updateYourself: ' . strlen($jsonPayload) . ' bytes');
+            BattleBroadcaster::broadcastToBattle($battleId, $payloadArray, 'updateYourself');
+            // Transforma em JSON
+
         }
     }
 

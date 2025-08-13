@@ -5,6 +5,7 @@ namespace App\Battle;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use App\Services\Battle\StaminaService;
+use App\Services\Battle\BattleBroadcaster;
 
 class BattleManager
 {
@@ -18,7 +19,7 @@ class BattleManager
         }
 
         foreach ($battleData['characters'] as $charId => $character) {
-            Redis::hset("battle:$battleId:characters", $charId, json_encode($character));
+            Redis::hset("battle:$battleId:players", $charId, json_encode($character));
             Log::debug("Saved character $charId for battle $battleId");
         }
 
@@ -35,9 +36,10 @@ class BattleManager
 
         $keys = [
             "battle:$battleId:users",
-            "battle:$battleId:characters",
+            "battle:$battleId:players",
             "battle:$battleId:monsters",
             "battle:$battleId:stamina_data",
+            "battle:$battleId:buffs",
             "battle:$battleId:last_update",
         ];
 
@@ -74,7 +76,7 @@ class BattleManager
     public function processBattles(): void
     {
         $battleIds = Redis::smembers('battles:active');
-        Log::info("Processing battles, active battle count: " . count($battleIds));
+        //Log::info("Processing battles, active battle count: " . count($battleIds));
 
         foreach ($battleIds as $battleId) {
             Log::info("Processing battle $battleId");
@@ -87,21 +89,21 @@ class BattleManager
             }
             Log::debug("Loaded monsters for battle $battleId", ['monsters' => $monstersRaw]);
 
-            $charactersRaw = Redis::hgetall("battle:$battleId:characters");
-            if (!$charactersRaw) {
-                Log::warning("Battle $battleId has no characters.");
+            $playersRaw = Redis::hgetall("battle:$battleId:characters");
+            if (!$playersRaw) {
+                Log::warning("Battle $battleId has no players.");
                 continue;
             }
-            Log::debug("Loaded characters for battle $battleId", ['characters' => $charactersRaw]);
+            Log::debug("Loaded players for battle $battleId", ['characters' => $playersRaw]);
 
             $monsters = [];
             foreach ($monstersRaw as $key => $json) {
                 $monsters[$key] = json_decode($json, true);
             }
 
-            $characters = [];
-            foreach ($charactersRaw as $key => $json) {
-                $characters[$key] = json_decode($json, true);
+            $players = [];
+            foreach ($playersRaw as $key => $json) {
+                $players[$key] = json_decode($json, true);
             }
 
             foreach ($monsters as $monsterKey => &$monster) {
@@ -111,34 +113,37 @@ class BattleManager
                 // Atualiza o array do monstro para passar para a decisão de comportamento
                 $monster['current_stamina'] = $currentStamina;
 
+                // Aqui pode ter uma estratégia para comportamento do monstro
                 $behavior = $this->resolveBehavior($monster['type'] ?? '');
 
-                $targetCharacter = reset($characters);
-                $targetCharacterKey = key($characters);
+                // Seleciona alvo (exemplo: primeiro jogador)
+                $targetPlayer = reset($players);
+                $targetPlayerKey = key($players);
 
-                Log::info("Monster {$monster['name']} deciding action with current stamina $currentStamina against character {$targetCharacter['name']}.");
+                Log::info("Monster {$monster['name']} deciding action with stamina $currentStamina against player {$targetPlayer['name']}.");
 
                 $action = $behavior->decideAction($monster, [
                     'monsters' => $monsters,
-                    'characters' => $characters,
+                    'players' => $players,
                     'battle_id' => $battleId,
                 ]);
 
                 Log::info("Monster {$monster['name']} decided action: " . ($action ?? 'none'));
 
                 if ($action) {
-                    BattleActions::executeAction($monster, $action, $characters[$targetCharacterKey], $battleId);
+                    BattleActions::executeAction($monster, $action, $players[$targetPlayerKey], $battleId, 'monster');
                 }
             }
 
+            // Atualiza estado no Redis
             foreach ($monsters as $key => $monster) {
                 Redis::hset("battle:$battleId:monsters", $key, json_encode($monster));
                 Log::debug("Saved updated monster $key for battle $battleId");
             }
 
-            foreach ($characters as $key => $character) {
-                Redis::hset("battle:$battleId:characters", $key, json_encode($character));
-                Log::debug("Saved updated character $key for battle $battleId");
+            foreach ($players as $key => $player) {
+                Redis::hset("battle:$battleId:players", $key, json_encode($player));
+                Log::debug("Saved updated player $key for battle $battleId");
             }
 
             $this->updateLastUpdate($battleId);

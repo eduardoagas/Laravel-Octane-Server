@@ -4,7 +4,6 @@ namespace App\Services\Battle;
 
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
-use App\Services\Battle\StaminaService;
 use App\Exceptions\SkillCooldownException;
 use App\Exceptions\InsufficientStaminaException;
 
@@ -13,13 +12,22 @@ class SkillService
     private StaminaService $staminaService;
 
     private array $skills = [
+        0 => [
+            'id' => 0,
+            'name' => 'Attack',
+            'type' => 'physical',
+            'power' => 0,
+            'stamina_cost' => 10,
+            'pre_delay' => 0,
+            'post_delay' => 500,
+        ],
         1 => [
             'id' => 1,
             'name' => 'Fire Ball',
-            'type' => 'damage',
+            'type' => 'magical',
             'power' => 25,
             'stamina_cost' => 5,
-            'pre_delay' => 500,  // milissegundos
+            'pre_delay' => 500,
             'post_delay' => 1000,
         ],
         2 => [
@@ -33,82 +41,82 @@ class SkillService
             'pre_delay' => 300,
             'post_delay' => 500,
         ],
+        3 => [
+            'id' => 3,
+            'name' => 'Heal',
+            'type' => 'heal',
+            'power' => 20, // quantidade de HP curada
+            'stamina_cost' => 8,
+            'pre_delay' => 400,
+            'post_delay' => 700,
+        ],
+        4 => [
+            'id' => 4,
+            'name' => 'Raise Defense',
+            'type' => 'buff',
+            'stat' => 'defense',
+            'bonus' => 0,
+            'duration' => 3,
+            'stamina_cost' => 0,
+            'pre_delay' => 300,
+            'post_delay' => 500,
+        ]
     ];
 
     public function __construct()
     {
         $this->staminaService = new StaminaService();
     }
-
-    /**
-     * @param array $characterData Dados do personagem
-     * @param array|null $enemyData Dados do inimigo (opcional, para skills que afetam inimigos)
-     * @param string $battleId ID da batalha
-     * @param int $skillId ID da skill
-     * @return array Resultado da aplicação da skill
-     * @throws SkillCooldownException
-     * @throws InsufficientStaminaException
-     */
-    public function applySkill(array $characterData, ?array $enemyData, string $battleId, int $skillId): array
+    public function getSkillName(int $skillId): string
     {
+        return $this->skills[$skillId]['name'] ?? 'Unknown Skill';
+    }
 
-        Log::info("⚔️ [applySkill] Início da aplicação da skill", [
-            'battle_id' => $battleId,
-            'character_id' => $characterData['id'] ?? null,
-            'skill_id' => $skillId,
-        ]);
-
+    public function applySkill(
+        array $caster,
+        ?array $target,
+        string $battleId,
+        int $skillId,
+        string $casterType // 'character' ou 'monster'
+    ): array {
         if (!isset($this->skills[$skillId])) {
             throw new \InvalidArgumentException("Skill $skillId not found");
         }
 
         $skill = $this->skills[$skillId];
-        $charId = $characterData['id'];
-        $now = now()->timestamp;
+        $casterId = $caster['instanceId'] ?? $caster['id'];
 
-        //Verifica cooldown Global
-        $redisKey = "global_cooldown_at:{$battleId}:{$charId}";
-        $readyAt = Redis::get($redisKey);
-
-        if ($readyAt && $now < (int)$readyAt) {
-            throw new SkillCooldownException("Aguarde até " . date('H:i:s', (int)$readyAt) . " para usar outra skill.");
+        // Cooldown global apenas para jogadores
+        if ($casterType === 'character') {
+            $this->checkCooldown($battleId, $casterId, $skill['post_delay']);
         }
 
-        // Verifica cooldown da skill
-        /*$redisKey = "skill_ready_at:{$battleId}:{$charId}:{$skillId}";
-        $readyAt = Redis::get($redisKey);
-        if ($readyAt && $now < (int)$readyAt) {
-            throw new SkillCooldownException("Skill em cooldown até " . date('H:i:s', (int)$readyAt));
-        }*/
-
-        // Obtém stamina atual
-        $currentStamina = $this->staminaService->getCurrentStamina($battleId, $charId, 'character');
-
+        // Verifica stamina
+        $currentStamina = $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType);
         if ($currentStamina < $skill['stamina_cost']) {
             throw new InsufficientStaminaException("Stamina insuficiente ({$currentStamina} / {$skill['stamina_cost']})");
         }
 
         // Consome stamina
-        $success = $this->staminaService->consumeStamina($battleId, $charId, $skill['stamina_cost']);
-        if (!$success) {
-            throw new InsufficientStaminaException("Falha ao consumir stamina");
-        }
+        $this->staminaService->consumeStamina($battleId, $casterId, $skill['stamina_cost'], $casterType);
 
         $resultPayload = [];
 
-        if ($skill['type'] === 'damage') {
-            if (!$enemyData) {
-                throw new \InvalidArgumentException("Enemy data is required for damage skills");
+        if ($skill['type'] === 'physical' || $skill['type'] === 'magical') {
+            if (!$target) {
+                throw new \InvalidArgumentException("Target is required for damage skills");
             }
 
-            // Calcula dano simples (pode refinar)
-            $damage = max(0, $skill['power'] + ($characterData['mattack'] ?? 0) - ($enemyData['defense'] ?? 0));
-            $enemyData['hp'] = max(0, ($enemyData['hp'] ?? 0) - $damage);
+            $attackAttribute = $skill['type'] === 'physical' ? 'pattack' : 'mattack';
+            $baseAttack = $caster[$attackAttribute] ?? 0;
+            $power = $skill['power'] + $baseAttack;
 
-            // Atualiza no Redis
-            Redis::hset("battle:{$battleId}:monsters", $enemyData['id'], json_encode($enemyData));
+            $damage = max(0, $power - ($target['defense'] ?? 0));
+            $target['hp'] = max(0, ($target['hp'] ?? 0) - $damage);
 
-            $resultPayload['monster_hp'] = $enemyData['hp'];
+            $this->saveEntityState($battleId, $target);
+
+            $resultPayload['target_hp'] = $target['hp'];
             $resultPayload['damage_dealt'] = $damage;
         } elseif ($skill['type'] === 'buff') {
             $buff = [
@@ -117,24 +125,55 @@ class SkillService
                 'bonus' => $skill['bonus'],
                 'duration' => $skill['duration'],
             ];
-
-            Redis::hset("battle:{$battleId}:buffs", $charId, json_encode($buff));
-
+            Redis::hset("battle:{$battleId}:buffs", $casterId, json_encode($buff));
             $resultPayload['buff_applied'] = $buff;
-        }
+        } elseif ($skill['type'] === 'heal') {
+            if (!$target) {
+                throw new \InvalidArgumentException("Target is required for heal skills");
+            }
 
-        // Define cooldown no Redis para post_delay (em segundos)
-        $newReadyAt = $now + (int)($skill['post_delay'] / 1000);
-        Redis::set($redisKey, $newReadyAt);
+            $currentHp = $target['hp'] ?? 0;
+            $maxHp = $target['max_hp'] ?? 100; // default max_hp se não existir
+
+            $healAmount = $skill['power'];
+            $newHp = min($maxHp, $currentHp + $healAmount);
+            $actualHealed = $newHp - $currentHp;
+
+            $target['hp'] = $newHp;
+            $this->saveEntityState($battleId, $target);
+
+            $resultPayload['target_hp'] = $newHp;
+            $resultPayload['healed_amount'] = $actualHealed;
+        }
 
         return [
             'battle_id' => $battleId,
-            'character_id' => $charId,
+            'caster_id' => $casterId,
             'skill_id' => $skillId,
             'result' => $resultPayload,
-            'current_stamina' => $this->staminaService->getCurrentStamina($battleId, $charId, 'character'),
+            'current_stamina' => $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType),
             'pre_delay' => $skill['pre_delay'],
             'post_delay' => $skill['post_delay'],
         ];
+    }
+
+    private function checkCooldown(string $battleId, string $casterId, int $postDelay)
+    {
+        $redisKey = "global_cooldown_at:{$battleId}:{$casterId}";
+        $now = now()->timestamp;
+        $readyAt = Redis::get($redisKey);
+        if ($readyAt && $now < (int)$readyAt) {
+            throw new SkillCooldownException("Skill em cooldown até " . date('H:i:s', (int)$readyAt));
+        }
+        Redis::set($redisKey, $now + (int)($postDelay / 1000));
+    }
+
+    private function saveEntityState(string $battleId, array $entity)
+    {
+        if (isset($entity['monsterId']) || ($entity['type'] ?? null) === 'monster') {
+            Redis::hset("battle:{$battleId}:monsters", $entity['id'], json_encode($entity));
+        } else {
+            Redis::hset("battle:{$battleId}:characters", $entity['id'], json_encode($entity));
+        }
     }
 }

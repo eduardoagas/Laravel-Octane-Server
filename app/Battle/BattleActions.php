@@ -3,92 +3,124 @@
 namespace App\Battle;
 
 use Illuminate\Support\Facades\Log;
-use App\Services\Battle\StaminaService;
+use App\Services\Battle\SkillService;
+use Illuminate\Support\Facades\Redis;
+use App\Exceptions\SkillCooldownException;
 use App\Services\Battle\BattleBroadcaster;
+use App\Exceptions\InsufficientStaminaException;
 
 class BattleActions
 {
-    /**
-     * Executa a ação do monstro contra o personagem alvo.
-     *
-     * @param array &$monster
-     * @param string $action
-     * @param array &$targetCharacter
-     * @param string $battleId
-     * @return void
-     */
-    public static function executeAction(array &$monster, string $action, array &$targetCharacter, string $battleId): void
-    {
-        switch ($action) {
-            case 'attack':
-                self::attack($monster, $targetCharacter, $battleId);
-                break;
+    public static function executeAction(
+        array &$caster,
+        string $action,
+        ?array &$target,
+        string $battleId,
+        string $casterType // 'monster' ou 'character'
+    ): void {
+        $skillService = new SkillService();
+        $skillId = self::mapActionToSkillId($action);
 
-            case 'wait':
-                self::wait($monster);
-                break;
+        $globalMessages = [];
 
-            // Exemplo para habilidades futuras
-            case 'special_skill':
-                self::specialSkill($monster, $targetCharacter, $battleId);
-                break;
+        try {
+            $result = $skillService->applySkill($caster, $target, $battleId, $skillId, $casterType);
+            if ($target && isset($target['id'])) {
+                if (($target['type'] ?? '') === 'monster') {
+                    $updatedTargetJson = Redis::hget("battle:$battleId:monsters", $target['instanceId']);
+                } else {
+                    $updatedTargetJson = Redis::hget("battle:$battleId:characters", $target['id']);
+                }
+                if ($updatedTargetJson) {
+                    $target = json_decode($updatedTargetJson, true);
+                }
+            }
+            // Monta actionInfoUse
+            $casterName = $caster['name'] ?? ($caster['username'] ?? 'Desconhecido');
+            $skillName = $skillService->getSkillName($skillId);
+            $actionInfoUse = ($casterType === 'monster' ? 'Monstro' : 'Jogador') . " {$casterName} utilizou skill {$skillName}";
 
-            default:
-                Log::warning("Monster {$monster['name']} performed unknown action '$action'.");
-                break;
-        }
+            // Monta actionInfoResult
+            $actionInfoResult = '';
+            $targetName = $target['name'] ?? ($target['username'] ?? 'Desconhecido');
+            $targetTypeStr = ($target['type'] ?? 'character') === 'monster' ? 'Monstro' : 'Jogador';
 
-        BattleBroadcaster::broadcastToBattle($battleId, [
-            'monster' => $monster,
-            'action' => $action,
-            'targetCharacter' => $targetCharacter,
-        ], 'battle_action');
+            if (isset($result['result']['damage_dealt'])) {
+                $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu dano de " . $result['result']['damage_dealt'];
+            } elseif (isset($result['result']['healed'])) {
+                $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu cura de " . $result['result']['healed'];
+            } elseif (isset($result['result']['buff_applied'])) {
+                $buff = $result['result']['buff_applied'];
+                $actionInfoResult = "Buff aplicado: +{$buff['bonus']} {$buff['stat']} por {$buff['duration']} turnos";
+            }
 
-        BattleBroadcaster::broadcastToBattle($battleId, [
-            'players' => [
-                [
-                    'instanceId' => (string) $targetCharacter['id'],
-                    'currentHp' => (int) $targetCharacter['hp'],
+            // Verifica mortes para mensagens globais
+            if ($target && isset($target['hp']) && $target['hp'] <= 0) {
+                $targetName = $target['name'] ?? ($target['username'] ?? 'Desconhecido');
+                $globalMessages[] = ($target['type'] ?? 'character') === 'monster'
+                    ? "{$targetName} morreu!"
+                    : "{$targetName} morreu!";
+            }
+
+            $updatePayload = [
+                'players' => [],
+                'enemies' => [],
+                'general' => [
+                    'actionInfoUse' => $actionInfoUse,
+                    'actionInfoResult' => $actionInfoResult,
+                    'globalMessages' => $globalMessages,
                 ],
-            ],
-        ], 'updateYourself');
-    }
+            ];
 
-    protected static function attack(array &$monster, array &$targetCharacter, string $battleId): void
-    {
-        $currentStamina = $monster['current_stamina'] ?? 0;
-        $staminaCost = 10;
+            if ($target) {
+                $updatePayload['players'][] = [
+                    'instanceId' => (string) $target['id'],
+                    'currentHp' => (int) ($target['hp'] ?? 0),
+                ];
+            }
 
-        if ($currentStamina < $staminaCost) {
-            Log::info("Monster {$monster['name']} tentou atacar mas não tem stamina suficiente (tem $currentStamina, precisa de $staminaCost).");
-            return; // Ou outra lógica de fallback
+            BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
+        } catch (InsufficientStaminaException $e) {
+            $globalMessages[] = "Stamina insuficiente";
+            $updatePayload = [
+                'actionInfoUse' => '',
+                'actionInfoResult' => '',
+                'globalMessages' => $globalMessages,
+                'players' => [],
+            ];
+            BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
+        } catch (SkillCooldownException $e) {
+            $globalMessages[] = "Skill em cooldown";
+            $updatePayload = [
+                'actionInfoUse' => '',
+                'actionInfoResult' => '',
+                'globalMessages' => $globalMessages,
+                'players' => [],
+            ];
+            BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
+        } catch (\Throwable $e) {
+            Log::error("[BattleActions] Erro ao executar ação: " . $e->getMessage());
+            $globalMessages[] = "Erro inesperado ao executar ação";
+            $updatePayload = [
+                'actionInfoUse' => '',
+                'actionInfoResult' => '',
+                'globalMessages' => $globalMessages,
+                'players' => [],
+            ];
+            BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
         }
-
-        $damage = max(0, $monster['pattack'] - ($targetCharacter['defense'] ?? 0));
-        $targetCharacter['hp'] = max(0, ($targetCharacter['hp'] ?? 0) - $damage);
-
-        $newStamina = max(0, $currentStamina - $staminaCost);
-        $monster['current_stamina'] = $newStamina;
-
-        Log::info("Monster {$monster['name']} attacked {$targetCharacter['name']} for $damage damage. Target HP now {$targetCharacter['hp']}. Stamina after attack: $newStamina.");
-
-        if ($targetCharacter['hp'] <= 0) {
-            Log::info("Character {$targetCharacter['name']} died!");
-        }
-
-        // Atualiza stamina no serviço (persistência e controle global)
-        StaminaService::consumeStamina($battleId, (string)$monster['instanceId'], $staminaCost, 'monster');
     }
 
-    protected static function wait(array &$monster): void
-    {
-        Log::info("Monster {$monster['name']} waits.");
-    }
 
-    protected static function specialSkill(array &$monster, array &$targetCharacter, string $battleId): void
+
+
+    private static function mapActionToSkillId(string $action): int
     {
-        // Exemplo para implementar uma habilidade especial
-        Log::info("Monster {$monster['name']} uses special skill on {$targetCharacter['name']}.");
-        // Implemente a lógica da skill aqui
+        return match ($action) {
+            'attack' => 0,
+            'special_skill' => 1,
+            'wait' => 4,
+            default => throw new \InvalidArgumentException("Unknown action '$action'")
+        };
     }
 }

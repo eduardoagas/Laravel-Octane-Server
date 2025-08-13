@@ -25,13 +25,21 @@ class UnityEventDispatcher
             // adicionar os demais aqui...
         ];
     }
-
     public function dispatch(string $event, array $payload, int $userId, string $token, Connection $connection): void
     {
+        // Ignorar eventos Pusher internos
+        if (Str::startsWith($event, 'pusher:')) {
+            // Opcional: logar ou simplesmente ignorar
+            return;
+        }
         $handlerClass = $this->handlers[$event] ?? null;
 
         if (!$handlerClass || !class_exists($handlerClass)) {
-            $connection->send(json_encode(['error' => 'Invalid message type']));
+            $errorMessage = 'Invalid message type';
+            if (!empty($event)) {
+                $errorMessage .= ": " . $event;
+            }
+            $connection->send(json_encode(['error' => $errorMessage]));
             return;
         }
 
