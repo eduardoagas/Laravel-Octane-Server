@@ -35,6 +35,7 @@ return [
             'key' => env('REVERB_APP_KEY'),
             'secret' => env('REVERB_APP_SECRET'),
             'app_id' => env('REVERB_APP_ID'),
+            'queue' => true, // ativa broadcast assíncrono via fila
             'options' => [
                 'host' => env('REVERB_HOST'),
                 'port' => env('REVERB_PORT', 443),
@@ -48,6 +49,7 @@ return [
 
         'pusher' => [
             'driver' => 'pusher',
+            'queue' => true, // ativa broadcast assíncrono via fila
             'key' => env('PUSHER_APP_KEY'),
             'secret' => env('PUSHER_APP_SECRET'),
             'app_id' => env('PUSHER_APP_ID'),
@@ -62,6 +64,10 @@ return [
             'client_options' => [
                 // Guzzle client options: https://docs.guzzlephp.org/en/stable/request-options.html
             ],
+        ],
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default', // Or a specific Redis connection defined in config/database.php
         ],
 
         'ably' => [

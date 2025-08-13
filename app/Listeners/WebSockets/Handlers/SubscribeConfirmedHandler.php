@@ -29,7 +29,7 @@ class SubscribeConfirmedHandler implements HandlesUnityEvent
             Log::info("MATCHED");
             $battleId = $matches[1];
             // Registrar batalha como ativa agora que cliente está inscrito
-            Redis::sadd('battles:active', $battleId);
+
             // Agora pode disparar o updateYourself para esse usuário/instância
             $characterId = $this->getCharacterIdByUserId($userId); // implemente conforme sua lógica
 
@@ -53,6 +53,8 @@ class SubscribeConfirmedHandler implements HandlesUnityEvent
             // Loga o tamanho em bytes
             Log::info('Tamanho do payload JSON para updateYourself: ' . strlen($jsonPayload) . ' bytes');
             BattleBroadcaster::broadcastToBattle($battleId, $payloadArray, 'updateYourself');
+            Redis::sadd('battles:active', $battleId);
+            Log::info("batalha ativada");
             // Transforma em JSON
 
         }
