@@ -10,7 +10,6 @@ use App\Listeners\WebSockets\Contracts\HandlesUnityEvent;
 
 class ConnectToServerHandler implements HandlesUnityEvent
 {
-
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
     {
         // —————————————
@@ -66,26 +65,23 @@ class ConnectToServerHandler implements HandlesUnityEvent
         // —————————————
         // 4) Persiste no Redis
         $characterData = $character->toArray();
-        // Persistir a sessão como HASH
+
         Redis::hmset("session:$token", [
-            'character_id' => $character->id // ← incluído aqui
+            'character_id' => $character->id
         ]);
 
-        // Persistir os dados do personagem como HASH separado
         Redis::hmset("character_session:{$character->id}", [
-            ...$characterData, // certifique-se de que isso retorna apenas dados escalares
+            ...$characterData,
             'user_id' => $userId,
         ]);
 
-        $connection->send(json_encode([
-            'event' => 'unity-response',
-            'data' => ['message' => 'Connection established.']
-        ]));
         // —————————————
-        // 5) Responde ao cliente
+        // 5) Envia instrução para Unity assinar o canal do personagem
         $connection->send(json_encode([
-            'event'     => 'character_connected',
-            'data' => ['character' => $characterData],
+            'event' => 'subscribeMe',
+            'data' => [
+                'channel' => "character.{$character->id}"
+            ]
         ]));
     }
 }

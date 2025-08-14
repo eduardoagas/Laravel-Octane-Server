@@ -3,9 +3,11 @@
 namespace App\Services\Battle;
 
 use App\Events\BattleEvent;
+use App\Events\CharacterEvent;
 use Illuminate\Support\Facades\Log;
 use App\Jobs\BroadcastBattleEventJob;
 use Illuminate\Support\Facades\Redis;
+use App\Jobs\BroadcastCharacterEventJob;
 use Laravel\Reverb\Contracts\Connection;
 use App\Services\UnityConnectionRegistry;
 
@@ -13,10 +15,52 @@ class BattleBroadcaster
 {
 
 
+    /*public static function broadcastToCharacter(string|int $characterId, array $payload, string $eventName = 'updateYourself'): void
+    {
+        Log::info("[BattleBroadcaster] Dispatching broadcast job to character {$characterId} with event {$eventName}", [$payload]);
+
+        $job = new BroadcastCharacterEventJob((string)$characterId, $payload, $eventName);
+
+        dispatch_sync($job);
+    }*/
+
+    public static function broadcastToBattle(string $battleId, array $payload, string $eventName = 'updateYourself'): void
+    {
+        try {
+            // Busca todos os personagens da batalha no Redis
+            $characters = Redis::hgetall("battle:{$battleId}:characters");
+
+            if (empty($characters)) {
+                Log::warning("[BattleBroadcaster] Nenhum personagem encontrado na batalha {$battleId}");
+                return;
+            }
+
+            $uniqueCharacters = array_column(array_map(fn($json) => json_decode($json, true), $characters), null, 'id');
+
+            // Agora $uniqueCharacters contém apenas um registro por characterId
+
+            foreach ($uniqueCharacters as $charId => $charJson) {
+                $charData = json_decode($charJson, true);
+                if (!isset($charData['id'])) {
+                    Log::warning("[BattleBroadcaster] Personagem inválido no Redis: {$charId}");
+                    continue;
+                }
+
+                self::broadcastToCharacter($charData['id'], $payload, $eventName);
+            }
+
+            Log::info("[BattleBroadcaster] Broadcast para todos personagens da batalha {$battleId} com evento {$eventName}");
+        } catch (\Throwable $e) {
+            Log::error("[BattleBroadcaster] Erro ao enviar para batalha {$battleId}: {$e->getMessage()}", [
+                'exception' => $e
+            ]);
+        }
+    }
+
     /**
      * Broadcast para todos os jogadores de uma batalha via Octane Job
      */
-    public static function broadcastToBattle(string $battleId, array $payload, string $eventName = 'updateYourself'): void
+    /* public static function broadcastToBattle(string $battleId, array $payload, string $eventName = 'updateYourself'): void
     {
         Log::info("[BattleBroadcaster] Dispatching broadcast job to battle {$battleId} with event {$eventName}", [$payload]);
 
@@ -25,12 +69,12 @@ class BattleBroadcaster
 
         // No Octane, podemos rodar imediatamente sem fila
         dispatch_sync($job); // ou dispatch($job) se quiser usar fila
-    }
-    /*public static function broadcastToBattle(string $battleId, array $payload, string $eventName = 'battle_event'): void
+    }*/
+    public static function broadcastToCharacter(string|int $characterId, array $payload, string $eventName = 'battle_event'): void
     {
         Log::info("BROADCASTING to battle the payload", [$payload]);
-        broadcast(new BattleEvent($battleId, $payload, $eventName));
-    }*?
+        broadcast(new CharacterEvent((string) $characterId, $payload, $eventName));
+    }
 
     /* public static function broadcastToBattleNotWorking(string $battleId, array $payload, string $eventName = 'battle_event'): void
     {

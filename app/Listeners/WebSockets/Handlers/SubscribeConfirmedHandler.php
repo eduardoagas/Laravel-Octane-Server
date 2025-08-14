@@ -1,14 +1,10 @@
 <?php
 
-// app/WebSocket/Handlers/BattleWithMonsterHandler.php
-
 namespace App\Listeners\WebSockets\Handlers;
 
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Laravel\Reverb\Contracts\Connection;
-use App\Services\UnityConnectionRegistry;
-use App\Services\Battle\BattleBroadcaster;
 use App\Listeners\WebSockets\Contracts\HandlesUnityEvent;
 
 class SubscribeConfirmedHandler implements HandlesUnityEvent
@@ -24,61 +20,30 @@ class SubscribeConfirmedHandler implements HandlesUnityEvent
             return;
         }
 
-        // Extraia o battleId do canal (ex: "battle.battle_abc123" -> "battle_abc123")
-        if (preg_match('/^battle\.(.+)$/', $channel, $matches)) {
-            Log::info("MATCHED");
-            $battleId = $matches[1];
-            // Registrar batalha como ativa agora que cliente está inscrito
+        // —————————————
+        // Canal de personagem
+        if (preg_match('/^character\.(\d+)$/', $channel, $matches)) {
+            $characterId = $matches[1];
 
-            // Agora pode disparar o updateYourself para esse usuário/instância
-            $characterId = $this->getCharacterIdByUserId($userId); // implemente conforme sua lógica
+            $characterData = Redis::hgetall("character_session:$characterId");
+            if (!$characterData) {
+                $connection->send(json_encode([
+                    'event' => 'character_invalid',
+                    'message' => "No character data found for ID $characterId"
+                ]));
+                return;
+            }
 
-            $characterJson = Redis::hgetall("character_session:$characterId");
+            // Responde para Unity que o personagem está conectado
+            $connection->send(json_encode([
+                'event' => 'character_connected',
+                'data' => ['character' => $characterData]
+            ]));
 
-            $currentCharacterStaminaData = json_decode(
-                Redis::hget("battle:$battleId:stamina_data", "character:$characterId"),
-                true
-            );
-            $payloadArray = [
-                'players' => [
-                    [
-                        'instanceId' => (string)$characterId,
-                        'currentHp' => (int) ($characterJson['hp'] ?? 0),
-                        'staminaData' => $currentCharacterStaminaData,
-                    ],
-                ],
-            ];
-            $jsonPayload = json_encode($payloadArray);
-
-            // Loga o tamanho em bytes
-            Log::info('Tamanho do payload JSON para updateYourself: ' . strlen($jsonPayload) . ' bytes');
-            BattleBroadcaster::broadcastToBattle($battleId, $payloadArray, 'updateYourself');
-            Redis::sadd('battles:active', $battleId);
-            Log::info("batalha ativada");
-            // Transforma em JSON
-
-        }
-    }
-
-    protected function getCharacterIdByUserId(int $userId): ?string
-    {
-        // 1. Pega o token da sessão (string)
-        $token = Redis::get("user_token:$userId");
-
-        if (!$token) {
-            Log::warning("Token não encontrado para userId $userId");
-            return null;
+            return;
         }
 
-        // 2. Busca a hash da sessão
-        $sessionData = Redis::hgetall("session:$token");
-
-        if (empty($sessionData)) {
-            Log::warning("Dados de sessão não encontrados para token $token");
-            return null;
-        }
-
-        // 3. Retorna o character_id da sessão
-        return $sessionData['character_id'] ?? null;
+        // —————————————
+        // (Aqui ficaria a lógica para outros canais, como batalha, se necessário)
     }
 }
