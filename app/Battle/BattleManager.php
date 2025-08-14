@@ -19,7 +19,7 @@ class BattleManager
         }
 
         foreach ($battleData['characters'] as $charId => $character) {
-            Redis::hset("battle:$battleId:players", $charId, json_encode($character));
+            Redis::hset("battle:$battleId:characters_data", $charId, json_encode($character));
             Log::debug("Saved character $charId for battle $battleId");
         }
 
@@ -36,7 +36,7 @@ class BattleManager
 
         $keys = [
             "battle:$battleId:users",
-            "battle:$battleId:players",
+            "battle:$battleId:characters_data",
             "battle:$battleId:monsters",
             "battle:$battleId:stamina_data",
             "battle:$battleId:buffs",
@@ -89,7 +89,7 @@ class BattleManager
             }
             Log::debug("Loaded monsters for battle $battleId", ['monsters' => $monstersRaw]);
 
-            $playersRaw = Redis::hgetall("battle:$battleId:characters");
+            $playersRaw = Redis::hgetall("battle:$battleId:characters_data");
             if (!$playersRaw) {
                 Log::warning("Battle $battleId has no players.");
                 continue;
@@ -142,7 +142,7 @@ class BattleManager
             }
 
             foreach ($players as $key => $player) {
-                Redis::hset("battle:$battleId:players", $key, json_encode($player));
+                Redis::hset("battle:$battleId:charactes_data", $key, json_encode($player));
                 Log::debug("Saved updated player $key for battle $battleId");
             }
 

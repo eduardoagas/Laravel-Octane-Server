@@ -173,7 +173,7 @@ class SkillService
         if (isset($entity['monsterId']) || ($entity['type'] ?? null) === 'monster') {
             Redis::hset("battle:{$battleId}:monsters", $entity['id'], json_encode($entity));
         } else {
-            Redis::hset("battle:{$battleId}:characters", $entity['id'], json_encode($entity));
+            Redis::hset("battle:{$battleId}:characters_data", $entity['id'], json_encode($entity));
         }
     }
 }

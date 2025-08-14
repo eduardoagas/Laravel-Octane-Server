@@ -87,34 +87,38 @@ class BattleWithMonsterHandler
         Redis::hset("battle:$battleId:stamina_data", "character:$characterId", json_encode($characterStaminaData));
 
 
-        /*$connection->send(json_encode([
-            'event' => 'unity-response',
-            'character' => [
-                $characterId => $characterJson
-            ],
+        $connection->send(json_encode([
+            'event' => 'updateYourself',
+            'channel' =>
+            "character.{$characterId}",
             'data' => [
-                'message' => 'Battle created with Goblin!',
-                'battle_instance' => $battleId,
-                'monsters' => [$monster]
-            ]
-        ]));*/
+                'players' => [
+                    [
+                        'instanceId'   => (string)$characterId,
+                        'currentHp'           => (int) $characterJson['hp'],
+                        'staminaData'  => $characterStaminaData,
+                    ]
+                ],
+                'general' => ['globalMessages' => ["Battle's started!"]]
+            ],
+        ]));
 
         // 8. Broadcast inicial para o canal do personagem
-        BattleBroadcaster::broadcastToCharacter(
+        /*BattleBroadcaster::broadcastToCharacter(
             $characterId,
             [
-                //'message' => 'Battle created with Goblin!',
-                //'battle_instance' => $battleId,
-                //'monsters' => [$monster],
-                'player' => [
-                    'instanceId' => (string)$characterId,
-                    'hp' => (int) $characterJson['hp'],
-                    'staminaData' => $characterStaminaData
+
+                'players' => [
+                    [
+                        'instanceId'   => (string)$characterId,
+                        'currentHp'           => (int) $characterJson['hp'],
+                        'staminaData'  => $characterStaminaData,
+                    ]
                 ],
                 'general' => ['globalMessages' => ["Battle's started!"]]
             ],
             'updateYourself'
-        );
+        );*/
 
         Redis::sadd('battles:active', $battleId);
         Log::info("Battle $battleId created and sent to character.$characterId for user $userId.");

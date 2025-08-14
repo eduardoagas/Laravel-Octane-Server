@@ -25,8 +25,8 @@ class AppServiceProvider extends ServiceProvider
 
         // Executa a cada 5 segundos
         Octane::tick('battle-ticker', function () use ($battleManager) {
-            //$battleManager->processBattles();
+            $battleManager->processBattles();
             // $battleManager->cleanupOldBattles(3600); // Limpa batalhas paradas há > 1h
-        }, 5);
+        }, 6);
     }
 }
