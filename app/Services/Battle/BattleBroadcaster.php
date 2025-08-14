@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Redis;
 use App\Jobs\BroadcastCharacterEventJob;
 use Laravel\Reverb\Contracts\Connection;
 use App\Services\UnityConnectionRegistry;
+use Illuminate\Support\Facades\Broadcast;
 
 class BattleBroadcaster
 {
@@ -70,15 +71,33 @@ class BattleBroadcaster
         // No Octane, podemos rodar imediatamente sem fila
         dispatch_sync($job); // ou dispatch($job) se quiser usar fila
     }*/
-    public static function broadcastToCharacter(string|int $characterId, array $payload, string $eventName = 'battle_event'): void
+    public static function broadcastToCharacterA(string|int $characterId, array $payload, string $eventName = 'battle_event'): void
     {
         Log::info("BROADCASTING to battle the payload", [$payload]);
         broadcast(new CharacterEvent((string) $characterId, $payload, $eventName));
     }
 
-    /* public static function broadcastToBattleNotWorking(string $battleId, array $payload, string $eventName = 'battle_event'): void
+    /*public static function broadcastToCharacter(
+        string|int $characterId,
+        array $payload,
+        string $eventName = 'updateYourself'
+    ): void {
+        $channel = "character.{$characterId}";
+
+        $message = json_encode([
+            'event' => $eventName,
+            'data' => $payload,
+            'channel' => $channel
+        ]);
+
+        Redis::publish('reverb', $message);
+
+        Log::info("[Redis] Published to {$channel}: {$eventName}", $payload);
+    }*/
+
+    /*public static function broadcastToCharacter(string $battleId, array $payload, string $eventName = 'battle_event'): void
     {
-        /* $application = [
+        $application = [
             'id' => config('reverb.apps.0.id'),
             'key' => config('reverb.apps.0.key'),
             'secret' => config('reverb.apps.0.secret'),
@@ -87,7 +106,7 @@ class BattleBroadcaster
         $eventData = [
             'event' => $eventName,
             'data' => $payload,  // Seu payload real (não precisa de json_encode aqui)
-            'channels' => ["battle.{$battleId}"]
+            'channels' => ["character.{$battleId}"]
         ];
 
         // 1. Construir a string para assinatura HMAC (ordem específica!)
@@ -114,19 +133,49 @@ class BattleBroadcaster
         ];
 
         // 4. Publicar como string JSON
-        Redis::publish('reverb', json_encode($finalPayload));
+        Redis::publish('redis', json_encode($finalPayload));
         Log::info("BROADCASTING VIA REDIS to battle the payload", [$payload]);
         //AQUI PRA BAIXO OUTRA COISA
-        Redis::publish("redis", json_encode([
+        /*Redis::publish("redis", json_encode([
             'event' => 'updateYourself',
             'data' => json_encode($payload),
             'channel' => "battle.{$battleId}"
         ]));
     }*/
 
+    public static function broadcastToCharacter(
+        string|int $characterId,
+        array $payload,
+        string $eventName = 'updateYourself'
+    ): void {
+        $channel = "character.{$characterId}";
+
+        try {
+            // Envio direto via Reverb
+            Broadcast::driver('reverb')->broadcast(
+                [$channel],
+                $eventName,
+                $payload
+            );
+
+            Log::info("[ReverbDirect] Sent to {$channel}: {$eventName}", $payload);
+        } catch (\Throwable $e) {
+            Log::error("[ReverbDirect] Error: " . $e->getMessage());
+        }
+    }
+
     /* public static function broadcastToBattle(string $battleId, array $payload, string $eventName = 'battle_event'): void
     {
         Log::info("BROADCASTING VIA REDIS to battle the payload", [$payload]);
         Redis::publish("reverb", new BattleEvent($battleId, $payload, $eventName));
     }*/
+
+    public static function broadcastToCharacterR(string $battleId, array $payload, string $eventName = 'battle_event'): void
+    {
+        Log::info("BROADCASTING VIA REDIS to battle the payload", [$payload]);
+        Redis::publish(
+            "character.{$battleId}",
+            json_encode($payload),
+        );
+    }
 }
