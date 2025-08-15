@@ -31,8 +31,8 @@ class BattleActions
             $targetTypeStr = ($target['type'] ?? 'character') === 'monster' ? 'Monstro' : 'Jogador';
 
             // Monta mensagens de ação
-            $actionInfoUse = ($casterType === 'monster' ? 'Monstro' : 'Jogador') . " {$casterName} utilizou skill {$skillName}";
-            $actionInfoResult = '';
+            $actionInfoUse = $result['action_info_use'];
+            $actionInfoResult = $result['action_info_result'];
 
             if (isset($result['damage_dealt'])) {
                 $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu dano de " . $result['damage_dealt'];
@@ -61,11 +61,12 @@ class BattleActions
             }
 
             $monstersRaw = Redis::hgetall("battle:$battleId:monsters");
+
             foreach ($monstersRaw as $monsterId => $monsterJson) {
                 $monsterData = json_decode($monsterJson, true);
                 $enemiesPayload[] = [
                     'instanceId' => (string)$monsterId,
-                    'currentHp' => (int)($monsterData['hp'] ?? 0),
+                    'isAlive' => isset($monsterData['hp']) && $monsterData['hp'] > 0,
                 ];
             }
 
@@ -108,15 +109,5 @@ class BattleActions
             ],
         ];
         BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
-    }
-
-    private static function mapActionToSkillId(string $action): int
-    {
-        return match ($action) {
-            'attack' => 0,
-            'special_skill' => 1,
-            'wait' => 4,
-            default => throw new \InvalidArgumentException("Unknown action '$action'"),
-        };
     }
 }

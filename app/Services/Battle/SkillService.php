@@ -175,7 +175,6 @@ class SkillService
 
     private function saveEntityState(string $battleId, array $entity)
     {
-        // Define a chave a ser usada no Redis
         $instanceId = $entity['instanceId'] ?? null;
 
         if (!$instanceId) {
@@ -186,10 +185,27 @@ class SkillService
         // Decide se é monstro ou personagem
         if (($entity['type'] ?? null) === 'monster' || isset($entity['monster_id'])) {
             Redis::hset("battle:{$battleId}:monsters", (string)$instanceId, json_encode($entity));
+
+            // Log do HP atual do monstro
+            $hp = $entity['hp'] ?? null;
+            Log::info("Monster HP saved", [
+                'instanceId' => $instanceId,
+                'hp' => $hp,
+                'battleId' => $battleId,
+            ]);
         } else {
             Redis::hset("battle:{$battleId}:characters_data", (string)$instanceId, json_encode($entity));
+
+            // Log do HP atual do personagem
+            $hp = $entity['hp'] ?? null;
+            Log::info("Character HP saved", [
+                'instanceId' => $instanceId,
+                'hp' => $hp,
+                'battleId' => $battleId,
+            ]);
         }
     }
+
 
 
     private function buildActionResultMessage(string $type, array $caster, ?array $target, array $resultPayload): string
