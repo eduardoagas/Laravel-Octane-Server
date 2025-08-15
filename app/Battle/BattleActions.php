@@ -5,70 +5,73 @@ namespace App\Battle;
 use Illuminate\Support\Facades\Log;
 use App\Services\Battle\SkillService;
 use Illuminate\Support\Facades\Redis;
-use App\Exceptions\SkillCooldownException;
 use App\Services\Battle\BattleBroadcaster;
+use App\Exceptions\SkillCooldownException;
 use App\Exceptions\InsufficientStaminaException;
 
 class BattleActions
 {
     public static function executeAction(
         array &$caster,
-        string $action,
+        int $skillId,       // antes era string $action
         ?array &$target,
         string $battleId,
-        string $casterType // 'monster' ou 'character'
+        string $casterType
     ): void {
         $skillService = new SkillService();
-        $skillId = self::mapActionToSkillId($action);
-
+        // Não precisa mais mapear
         $globalMessages = [];
-        $casterName = $caster['name'] ?? $caster['username'] ?? 'Desconhecido';
-        Log::info("[BattleActions] Executando ação '{$action}' do {$casterType} '{$casterName}'");
 
         try {
             $result = $skillService->applySkill($caster, $target, $battleId, $skillId, $casterType);
-            Log::info("[BattleActions] Skill aplicada, resultado:", $result);
-
-            if ($target && isset($target['id'])) {
-                Log::info("[BattleActions] Atualizando target {$target['id']}");
-                if (($target['type'] ?? '') === 'monster') {
-                    $updatedTargetJson = Redis::hget("battle:$battleId:monsters", $target['instanceId']);
-                } else {
-                    $updatedTargetJson = Redis::hget("battle:$battleId:characters_data", $target['id']);
-                }
-                if ($updatedTargetJson) {
-                    $target = json_decode($updatedTargetJson, true);
-                    Log::info("[BattleActions] Target atualizado via Redis:", $target);
-                }
-            }
 
             $casterName = $caster['name'] ?? ($caster['username'] ?? 'Desconhecido');
             $skillName = $skillService->getSkillName($skillId);
-            $actionInfoUse = ($casterType === 'monster' ? 'Monstro' : 'Jogador') . " {$casterName} utilizou skill {$skillName}";
-
-            $actionInfoResult = '';
             $targetName = $target['name'] ?? ($target['username'] ?? 'Desconhecido');
             $targetTypeStr = ($target['type'] ?? 'character') === 'monster' ? 'Monstro' : 'Jogador';
 
-            if (isset($result['result']['damage_dealt'])) {
-                $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu dano de " . $result['result']['damage_dealt'];
-            } elseif (isset($result['result']['healed'])) {
-                $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu cura de " . $result['result']['healed'];
-            } elseif (isset($result['result']['buff_applied'])) {
-                $buff = $result['result']['buff_applied'];
+            // Monta mensagens de ação
+            $actionInfoUse = ($casterType === 'monster' ? 'Monstro' : 'Jogador') . " {$casterName} utilizou skill {$skillName}";
+            $actionInfoResult = '';
+
+            if (isset($result['damage_dealt'])) {
+                $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu dano de " . $result['damage_dealt'];
+            } elseif (isset($result['healed_amount'])) {
+                $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu cura de " . $result['healed_amount'];
+            } elseif (isset($result['buff_applied'])) {
+                $buff = $result['buff_applied'];
                 $actionInfoResult = "Buff aplicado: +{$buff['bonus']} {$buff['stat']} por {$buff['duration']} turnos";
             }
 
             if ($target && isset($target['hp']) && $target['hp'] <= 0) {
-                $globalMessages[] = ($target['type'] ?? 'character') === 'monster'
-                    ? "{$targetName} morreu!"
-                    : "{$targetName} morreu!";
-                Log::info("[BattleActions] Target morreu:", $target);
+                $globalMessages[] = "{$targetName} morreu!";
+            }
+
+            // Payload para broadcast
+            $playersPayload = [];
+            $enemiesPayload = [];
+
+            $playersRaw = Redis::hgetall("battle:$battleId:characters_data");
+            foreach ($playersRaw as $playerId => $playerJson) {
+                $playerData = json_decode($playerJson, true);
+                $playersPayload[] = [
+                    'instanceId' => (string)$playerId,
+                    'currentHp' => (int)($playerData['hp'] ?? 0),
+                ];
+            }
+
+            $monstersRaw = Redis::hgetall("battle:$battleId:monsters");
+            foreach ($monstersRaw as $monsterId => $monsterJson) {
+                $monsterData = json_decode($monsterJson, true);
+                $enemiesPayload[] = [
+                    'instanceId' => (string)$monsterId,
+                    'currentHp' => (int)($monsterData['hp'] ?? 0),
+                ];
             }
 
             $updatePayload = [
-                'players' => [],
-                'enemies' => [],
+                'players' => $playersPayload,
+                'enemies' => $enemiesPayload,
                 'general' => [
                     'actionInfoUse' => $actionInfoUse,
                     'actionInfoResult' => $actionInfoResult,
@@ -76,47 +79,35 @@ class BattleActions
                 ],
             ];
 
-            if ($target) {
-                $updatePayload['players'][] = [
-                    'instanceId' => (string) $target['id'],
-                    'currentHp' => (int) ($target['hp'] ?? 0),
-                ];
-                Log::info("[BattleActions] Payload do player preparado:", $updatePayload['players']);
-            }
+            BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
 
-            BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
-            Log::info("[BattleActions] Broadcast enviado para batalha {$battleId}");
+            Log::info("[BattleActions] Broadcast enviado para batalha $battleId");
         } catch (InsufficientStaminaException $e) {
-            Log::warning("[BattleActions] Stamina insuficiente: {$e->getMessage()}");
             $globalMessages[] = "Stamina insuficiente";
-            $updatePayload = [
-                'actionInfoUse' => '',
-                'actionInfoResult' => '',
-                'globalMessages' => $globalMessages,
-                'players' => [],
-            ];
-            BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
+            self::broadcastError($battleId, $globalMessages);
         } catch (SkillCooldownException $e) {
-            Log::warning("[BattleActions] Skill em cooldown: {$e->getMessage()}");
             $globalMessages[] = "Skill em cooldown";
-            $updatePayload = [
-                'actionInfoUse' => '',
-                'actionInfoResult' => '',
-                'globalMessages' => $globalMessages,
-                'players' => [],
-            ];
-            BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
+            self::broadcastError($battleId, $globalMessages);
         } catch (\Throwable $e) {
             Log::error("[BattleActions] Erro inesperado: " . $e->getMessage(), ['exception' => $e]);
             $globalMessages[] = "Erro inesperado ao executar ação";
-            $updatePayload = [
+            self::broadcastError($battleId, $globalMessages);
+        }
+    }
+
+
+    private static function broadcastError(string $battleId, array $messages): void
+    {
+        $updatePayload = [
+            'players' => [],
+            'enemies' => [],
+            'general' => [
                 'actionInfoUse' => '',
                 'actionInfoResult' => '',
-                'globalMessages' => $globalMessages,
-                'players' => [],
-            ];
-            BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
-        }
+                'globalMessages' => $messages,
+            ],
+        ];
+        BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
     }
 
     private static function mapActionToSkillId(string $action): int
@@ -125,7 +116,7 @@ class BattleActions
             'attack' => 0,
             'special_skill' => 1,
             'wait' => 4,
-            default => throw new \InvalidArgumentException("Unknown action '$action'")
+            default => throw new \InvalidArgumentException("Unknown action '$action'"),
         };
     }
 }

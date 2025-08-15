@@ -84,7 +84,7 @@ class SkillService
         }
 
         $skill = $this->skills[$skillId];
-        $casterId = $caster['instanceId'] ?? $caster['id'];
+        $casterId = $caster['instanceId'];
 
         // Cooldown global apenas para jogadores
         if ($casterType === 'character') {
@@ -175,12 +175,22 @@ class SkillService
 
     private function saveEntityState(string $battleId, array $entity)
     {
-        if (isset($entity['monsterId']) || ($entity['type'] ?? null) === 'monster') {
-            Redis::hset("battle:{$battleId}:monsters", $entity['id'], json_encode($entity));
+        // Define a chave a ser usada no Redis
+        $instanceId = $entity['instanceId'] ?? null;
+
+        if (!$instanceId) {
+            Log::error("saveEntityState: entity missing instanceId", ['entity' => $entity]);
+            return;
+        }
+
+        // Decide se é monstro ou personagem
+        if (($entity['type'] ?? null) === 'monster' || isset($entity['monster_id'])) {
+            Redis::hset("battle:{$battleId}:monsters", (string)$instanceId, json_encode($entity));
         } else {
-            Redis::hset("battle:{$battleId}:characters_data", $entity['id'], json_encode($entity));
+            Redis::hset("battle:{$battleId}:characters_data", (string)$instanceId, json_encode($entity));
         }
     }
+
 
     private function buildActionResultMessage(string $type, array $caster, ?array $target, array $resultPayload): string
     {

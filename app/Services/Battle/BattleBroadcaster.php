@@ -52,7 +52,7 @@ class BattleBroadcaster
         $channel = "character.{$characterId}";
 
         try {
-            Broadcast::driver('reverb')->event(
+            Broadcast::driver('reverb')->broadcast(
                 [$channel],
                 $eventName,
                 $payload
