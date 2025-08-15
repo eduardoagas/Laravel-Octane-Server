@@ -32,6 +32,8 @@ class UseSkillHandler implements HandlesUnityEvent
         $battleId = $session['battle_instance_id'] ?? null;
         $characterId = $session['character_id'] ?? null;
 
+        Log::info("[USESKILLHANDLER] Usuário $characterId usando skill $skillId em batalha $battleId");
+
         if (!$battleId) {
             $connection->send(json_encode(['error' => 'Sessão inválida: battle_id ausente']));
             return;
@@ -72,8 +74,43 @@ class UseSkillHandler implements HandlesUnityEvent
             );
 
             // Envia resultado para todos os usuários da batalha
-            $userIds = Redis::smembers("battle:$battleId:users");
-            UnityConnectionRegistry::broadcastToUsers($userIds, $result);
+            //UnityConnectionRegistry::broadcastToBattle($battleId, $result);
+            $characterIds = Redis::smembers("{$battleId}:characters");
+
+            foreach ($characterIds as $characterId) {
+                // Recupera dados JSON do personagem
+                $characterJson = Redis::hgetall("character:{$characterId}");
+
+                if (empty($characterJson)) {
+                    continue; // ignora se não achar dados
+                }
+
+                // Decodifica valores que foram salvos como JSON
+                if (isset($characterJson['staminaData'])) {
+                    $characterStaminaData = json_decode($characterJson['staminaData'], true);
+                } else {
+                    $characterStaminaData = null;
+                }
+
+                $playersPayload[] = [
+                    'instanceId'  => (string) $characterId,
+                    'currentHp'   => isset($characterJson['hp']) ? (int) $characterJson['hp'] : 0,
+                    'staminaData' => $characterStaminaData,
+                ];
+            }
+
+            $connection->send(json_encode([
+                'event' => 'updateYourself',
+                'channel' =>
+                "character.{$characterId}",
+                'data' => [
+                    'players' => $playersPayload,
+                    'general' => [
+                        'actionInfoUse' => $result['action_info_use'],
+                        'actionInfoResult' => $result['action_info_result'],
+                    ]
+                ]
+            ]));
         } catch (InsufficientStaminaException | SkillCooldownException $e) {
             $connection->send(json_encode(['error' => $e->getMessage()]));
         } catch (\Exception $e) {

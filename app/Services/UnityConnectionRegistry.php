@@ -56,12 +56,12 @@ class UnityConnectionRegistry
         Log::info("Currently local connected users: " . implode(', ', $userIds));
     }
 
-    public static function broadcastToUsers(array $userIds, array $payload): void
+    /*public static function broadcastToUsers(array $userIds, array $payload): void
     {
         foreach ($userIds as $userId) {
             self::sendToUser((int)$userId, $payload);
         }
-    }
+    }*/
 
     public static function all(): array
     {

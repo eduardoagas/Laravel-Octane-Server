@@ -142,7 +142,7 @@ class BattleManager
             }
 
             foreach ($players as $key => $player) {
-                Redis::hset("battle:$battleId:charactes_data", $key, json_encode($player));
+                Redis::hset("battle:$battleId:characters_data", $key, json_encode($player));
                 Log::debug("Saved updated player $key for battle $battleId");
             }
 

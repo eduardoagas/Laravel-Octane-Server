@@ -150,10 +150,15 @@ class SkillService
             'battle_id' => $battleId,
             'caster_id' => $casterId,
             'skill_id' => $skillId,
-            'result' => $resultPayload,
             'current_stamina' => $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType),
             'pre_delay' => $skill['pre_delay'],
             'post_delay' => $skill['post_delay'],
+            'action_info_use' => sprintf(
+                "%s uses %s!",
+                $caster['name'] ?? 'Unknown',
+                $skill['name']
+            ),
+            'action_info_result' => $this->buildActionResultMessage($skill['type'], $caster, $target, $resultPayload)
         ];
     }
 
@@ -175,5 +180,22 @@ class SkillService
         } else {
             Redis::hset("battle:{$battleId}:characters_data", $entity['id'], json_encode($entity));
         }
+    }
+
+    private function buildActionResultMessage(string $type, array $caster, ?array $target, array $resultPayload): string
+    {
+        $casterName = $caster['name'] ?? 'Unknown';
+        $targetName = $target['name'] ?? 'Unknown';
+
+        return match ($type) {
+            'physical', 'magical' =>
+            sprintf("%s inflicts %d damage on %s!", $casterName, $resultPayload['damage_dealt'] ?? 0, $targetName),
+            'heal' =>
+            sprintf("%s heals %s (%d HP)!", $casterName, $targetName, $resultPayload['healed_amount'] ?? 0),
+            'buff' =>
+            sprintf("%s applies %s buff to %s!", $casterName, ucfirst($resultPayload['buff_applied']['stat'] ?? 'unknown'), $targetName),
+            default =>
+            ''
+        };
     }
 }
