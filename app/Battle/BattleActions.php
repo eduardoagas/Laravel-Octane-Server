@@ -3,8 +3,8 @@
 namespace App\Battle;
 
 use Illuminate\Support\Facades\Log;
-use App\Services\Battle\SkillService;
 use Illuminate\Support\Facades\Redis;
+use App\Services\Battle\SkillService;
 use App\Services\Battle\BattleBroadcaster;
 use App\Exceptions\SkillCooldownException;
 use App\Exceptions\InsufficientStaminaException;
@@ -13,46 +13,30 @@ class BattleActions
 {
     public static function executeAction(
         array &$caster,
-        int $skillId,       // antes era string $action
-        ?array &$target,
+        int $skillId,
+        array|null &$targets, // agora pode ser array de alvos ou um único alvo
         string $battleId,
-        string $casterType
+        string $casterType // 'character' ou 'monster'
     ): void {
         $skillService = new SkillService();
-        // Não precisa mais mapear
         $globalMessages = [];
 
         try {
-            $result = $skillService->applySkill($caster, $target, $battleId, $skillId, $casterType);
+            // Força transformar targets em array
+            $targets = is_null($targets) ? [] : (array)$targets;
 
-            $casterName = $caster['name'] ?? ($caster['username'] ?? 'Desconhecido');
-            $skillName = $skillService->getSkillName($skillId);
-            $targetName = $target['name'] ?? ($target['username'] ?? 'Desconhecido');
-            $targetTypeStr = ($target['type'] ?? 'character') === 'monster' ? 'Monstro' : 'Jogador';
-
-            // Monta mensagens de ação
-            $actionInfoUse = $result['action_info_use'];
-            $actionInfoResult = $result['action_info_result'];
-
-            if (isset($result['damage_dealt'])) {
-                $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu dano de " . $result['damage_dealt'];
-            } elseif (isset($result['healed_amount'])) {
-                $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu cura de " . $result['healed_amount'];
-            } elseif (isset($result['buff_applied'])) {
-                $buff = $result['buff_applied'];
-                $actionInfoResult = "Buff aplicado: +{$buff['bonus']} {$buff['stat']} por {$buff['duration']} turnos";
-            }
-
-            if ($target && isset($target['hp']) && $target['hp'] <= 0) {
-                $globalMessages[] = "{$targetName} morreu!";
+            $results = [];
+            foreach ($targets as &$target) {
+                $results[] = $skillService->applySkill($caster, $target, $battleId, $skillId, $casterType);
+                if (isset($target['hp']) && $target['hp'] <= 0) {
+                    $targetName = $target['name'] ?? ($target['username'] ?? 'Desconhecido');
+                    $globalMessages[] = "{$targetName} morreu!";
+                }
             }
 
             // Payload para broadcast
             $playersPayload = [];
-            $enemiesPayload = [];
-
-            $playersRaw = Redis::hgetall("battle:$battleId:characters_data");
-            foreach ($playersRaw as $playerId => $playerJson) {
+            foreach (Redis::hgetall("battle:$battleId:characters_data") as $playerId => $playerJson) {
                 $playerData = json_decode($playerJson, true);
                 $playersPayload[] = [
                     'instanceId' => (string)$playerId,
@@ -60,9 +44,8 @@ class BattleActions
                 ];
             }
 
-            $monstersRaw = Redis::hgetall("battle:$battleId:monsters");
-
-            foreach ($monstersRaw as $monsterId => $monsterJson) {
+            $enemiesPayload = [];
+            foreach (Redis::hgetall("battle:$battleId:monsters") as $monsterId => $monsterJson) {
                 $monsterData = json_decode($monsterJson, true);
                 $enemiesPayload[] = [
                     'instanceId' => (string)$monsterId,
@@ -74,8 +57,8 @@ class BattleActions
                 'players' => $playersPayload,
                 'enemies' => $enemiesPayload,
                 'general' => [
-                    'actionInfoUse' => $actionInfoUse,
-                    'actionInfoResult' => $actionInfoResult,
+                    'actionInfoUse' => $results[0]['action_info_use'] ?? '',
+                    'actionInfoResult' => $results[0]['action_info_result'] ?? '',
                     'globalMessages' => $globalMessages,
                 ],
             ];
@@ -95,7 +78,6 @@ class BattleActions
             self::broadcastError($battleId, $globalMessages);
         }
     }
-
 
     private static function broadcastError(string $battleId, array $messages): void
     {

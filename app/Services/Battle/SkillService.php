@@ -74,10 +74,11 @@ class SkillService
 
     public function applySkill(
         array $caster,
-        ?array $target,
+        ?array $target, //'character' ou 'monster'
         string $battleId,
         int $skillId,
-        string $casterType // 'character' ou 'monster'
+        string $casterType, // 'character' ou 'monster'
+       
     ): array {
         if (!isset($this->skills[$skillId])) {
             throw new \InvalidArgumentException("Skill $skillId not found");
