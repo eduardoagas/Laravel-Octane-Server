@@ -10,7 +10,7 @@ use App\Services\Battle\BattleActions;
 
 class BattleManager
 {
-    public function createBattle(string $battleId, array $battleData): void
+    /* public function createBattle(string $battleId, array $battleData): void
     {
         Log::info("Creating battle $battleId with data:", ['battleData' => $battleData]);
 
@@ -26,7 +26,7 @@ class BattleManager
         $this->updateLastUpdate($battleId);
 
         Log::info("Battle $battleId created and added to active battles.");
-    }
+    }*/
 
     public function finishBattle(string $battleId): void
     {
@@ -69,9 +69,6 @@ class BattleManager
         return Redis::smembers('battles:active');
     }
 
-    // =========================
-    // Processa ações dos jogadores
-    // =========================
     public function processBattleUsers(string $battleId): bool
     {
         $playersRaw = Redis::hgetall("battle:$battleId:characters_data");
@@ -80,10 +77,18 @@ class BattleManager
         if (!$playersRaw) return false;
 
         $monsters = [];
-        foreach ($monstersRaw as $k => $json) $monsters[$k] = json_decode($json, true);
+        foreach ($monstersRaw as $k => $json) {
+            $m = json_decode($json, true);
+            if (!isset($m['instanceId'])) $m['instanceId'] = (string)$k;
+            $monsters[$k] = $m;
+        }
 
         $players = [];
-        foreach ($playersRaw as $k => $json) $players[$k] = json_decode($json, true);
+        foreach ($playersRaw as $k => $json) {
+            $p = json_decode($json, true);
+            if (!isset($p['instanceId'])) $p['instanceId'] = (string)$k;
+            $players[$k] = $p;
+        }
 
         $pendingActionsKey = "battle:$battleId:pending_actions";
         $pendingActions = Redis::hgetall($pendingActionsKey);
@@ -94,73 +99,40 @@ class BattleManager
             $action = json_decode($actionJson, true);
 
             if (!isset($players[$characterId])) {
-                // jogador não existe (talvez desconectado) — remove e segue
                 Redis::hdel($pendingActionsKey, $characterId);
                 continue;
             }
 
             $caster = &$players[$characterId];
 
-            // Função para resolver alvos (AGORA sem depender de referências nessa lista)
-            $resolveTargets = function (array $action, array $caster, array $players, array $monsters) {
-                $targets = [];
+            // LOG: ação recebida
+            Log::channel('battle_debug')->info("[processBattleUsers] Processing action", [
+                'characterId' => $characterId,
+                'caster' => $caster,
+                'action' => $action
+            ]);
 
-                switch ($action['target_type'] ?? '') {
-                    case 'self':
-                        $targets[] = ['ref_key' => ($caster['type'] ?? 'character') === 'monster' ? 'monsters' : 'characters_data', 'id' => $caster['instanceId']];
-                        break;
+            $targets = $this->resolveTargets($action, $caster, $players, $monsters);
 
-                    case 'enemy':
-                        if (($caster['type'] ?? 'character') === 'character' && isset($action['target_id'], $monsters[$action['target_id']])) {
-                            $targets[] = ['ref_key' => 'monsters', 'id' => $action['target_id']];
-                        } elseif (($caster['type'] ?? 'character') === 'monster' && isset($action['target_id'], $players[$action['target_id']])) {
-                            $targets[] = ['ref_key' => 'characters_data', 'id' => $action['target_id']];
-                        }
-                        break;
-
-                    case 'ally':
-                        if (($caster['type'] ?? 'character') === 'character' && isset($action['target_id'], $players[$action['target_id']])) {
-                            $targets[] = ['ref_key' => 'characters_data', 'id' => $action['target_id']];
-                        } elseif (($caster['type'] ?? 'character') === 'monster' && isset($action['target_id'], $monsters[$action['target_id']])) {
-                            $targets[] = ['ref_key' => 'monsters', 'id' => $action['target_id']];
-                        }
-                        break;
-
-                    case 'party':
-                        if (($caster['type'] ?? 'character') === 'character') {
-                            foreach ($players as $pId => $p) {
-                                if ($pId !== $caster['instanceId']) $targets[] = ['ref_key' => 'characters_data', 'id' => $pId];
-                            }
-                        } else {
-                            foreach ($monsters as $mId => $m) {
-                                if ($mId !== $caster['instanceId']) $targets[] = ['ref_key' => 'monsters', 'id' => $mId];
-                            }
-                        }
-                        break;
-                }
-
-                return $targets;
-            };
-
-            $targets = $resolveTargets($action, $caster, $players, $monsters);
+            // LOG: targets resolvidos
+            Log::channel('battle_debug')->info("[processBattleUsers] Targets resolved", [
+                'characterId' => $characterId,
+                'targets' => $targets
+            ]);
 
             try {
                 $skillId = (int)($action['skill_id'] ?? 0);
                 $battleActions = new \App\Battle\BattleActions();
 
                 foreach ($targets as $t) {
-                    $targetId = $t['id'];
+                    $targetId = $t['refInstanceId'];
                     $targetKey = $t['ref_key'];
 
-                    // Carrega target atual do Redis (garante que passamos o estado atual)
                     $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                     $targetRef = $targetJson ? json_decode($targetJson, true) : null;
 
-                    // Executa ação (note que executeAction grava no Redis via saveEntityState)
                     $battleActions->executeAction($caster, $skillId, $targetRef, $battleId, ($caster['type'] ?? 'character'));
 
-                    // NÃO sobrescrever o Redis com a cópia local; em vez disso,
-                    // ler o estado atualizado que saveEntityState já gravou e sincronizar memória
                     $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                     if ($freshJson) {
                         $fresh = json_decode($freshJson, true);
@@ -170,7 +142,6 @@ class BattleManager
                             $players[$targetId] = $fresh;
                         }
                     } else {
-                        // Caso incomum: se não existir no Redis, logamos para investigar
                         Log::warning("After applySkill, fresh entity missing in Redis", [
                             'battleId' => $battleId,
                             'targetKey' => $targetKey,
@@ -184,17 +155,12 @@ class BattleManager
                 Log::error("Error processing action for player $characterId: " . $e->getMessage(), ['exception' => $e]);
             }
 
-            // remove a ação processada
             Redis::hdel($pendingActionsKey, $characterId);
         }
 
         return $processed;
     }
 
-
-    // =========================
-    // Processa comportamento dos monstros
-    // =========================
     public function processBattleMonsters(string $battleId): bool
     {
         $monstersRaw = Redis::hgetall("battle:$battleId:monsters");
@@ -206,10 +172,18 @@ class BattleManager
         }
 
         $monsters = [];
-        foreach ($monstersRaw as $k => $json) $monsters[$k] = json_decode($json, true);
+        foreach ($monstersRaw as $k => $json) {
+            $m = json_decode($json, true);
+            if (!isset($m['instanceId'])) $m['instanceId'] = (string)$k;
+            $monsters[$k] = $m;
+        }
 
         $players = [];
-        foreach ($playersRaw as $k => $json) $players[$k] = json_decode($json, true);
+        foreach ($playersRaw as $k => $json) {
+            $p = json_decode($json, true);
+            if (!isset($p['instanceId'])) $p['instanceId'] = (string)$k;
+            $players[$k] = $p;
+        }
 
         $processed = false;
 
@@ -220,8 +194,10 @@ class BattleManager
             Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) current stamina: $currentStamina");
 
             $behavior = $this->resolveBehavior($monster['type'] ?? '');
-            $targetPlayer = reset($players);
-            $targetPlayerKey = key($players);
+            if (!$behavior) {
+                Log::warning("[processBattleMonsters] Behavior não encontrado para tipo {$monster['type']}");
+                continue;
+            }
 
             $action = $behavior->decideAction($monster, [
                 'monsters' => $monsters,
@@ -229,25 +205,71 @@ class BattleManager
                 'battle_id' => $battleId,
             ]);
 
-            if ($action) {
-                $skillId = (int)($action['skill_id'] ?? 0);
-                Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) decided to use skill ID: $skillId on player {$targetPlayer['name']} ({$targetPlayerKey})");
-
-                try {
-                    BattleBattleActions::executeAction($monster, $skillId, $players[$targetPlayerKey], $battleId, 'monster');
-                    $processed = true;
-                    Log::info("[processBattleMonsters] Monster action executed and states updated in Redis for monster {$monsterKey} and player {$targetPlayerKey}");
-                } catch (\Throwable $e) {
-                    Log::error("[processBattleMonsters] Erro ao processar ação do monstro {$monsterKey}: " . $e->getMessage(), ['exception' => $e]);
-                }
-            } else {
+            if (!$action) {
                 Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) não realizou nenhuma ação");
+                continue;
+            }
+
+            if (!isset($action['caster_id'])) {
+                $action['caster_id'] = (string)$monsterKey;
+            }
+            if (!isset($action['caster_type'])) {
+                $action['caster_type'] = 'monster';
+            }
+
+
+            $targets = $this->resolveTargets($action, $monster, $players, $monsters);
+
+            // LOG: targets resolvidos
+            Log::channel('battle_debug')->info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) targets resolvidos", [
+                'action' => $action,
+                'targets' => $targets
+            ]);
+
+            if (empty($targets)) {
+                Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) não encontrou targets para o action", ['action' => $action]);
+                continue;
+            }
+
+            try {
+                $skillId = (int)($action['skill_id'] ?? 0);
+                $battleActions = new \App\Battle\BattleActions();
+
+                foreach ($targets as $t) {
+                    $targetId = $t['refInstanceId'];
+                    $targetKey = $t['ref_key'];
+
+                    $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
+                    $targetRef = $targetJson ? json_decode($targetJson, true) : null;
+
+                    $battleActions->executeAction($monster, $skillId, $targetRef, $battleId, 'monster');
+
+                    $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
+                    if ($freshJson) {
+                        $fresh = json_decode($freshJson, true);
+                        if ($targetKey === 'monsters') {
+                            $monsters[$targetId] = $fresh;
+                        } else {
+                            $players[$targetId] = $fresh;
+                        }
+                    } else {
+                        Log::warning("After monster applySkill, fresh entity missing in Redis", [
+                            'battleId' => $battleId,
+                            'targetKey' => $targetKey,
+                            'targetId' => $targetId
+                        ]);
+                    }
+                }
+
+                $processed = true;
+                Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) executed action $skillId");
+            } catch (\Throwable $e) {
+                Log::error("[processBattleMonsters] Erro ao processar ação do monstro {$monsterKey}: " . $e->getMessage(), ['exception' => $e]);
             }
         }
 
         return $processed;
     }
-
 
     protected function resolveBehavior(string $type)
     {
@@ -259,5 +281,97 @@ class BattleManager
         if (isset($map[$type])) {
             return app($map[$type]);
         }
+    }
+
+    private function resolveTargets(array $action, array $caster, array $players, array $monsters): array
+    {
+        $targets = [];
+        $casterType = $action['caster_type'] ?? ($caster['type'] ?? 'character');
+        $targetType = $action['target_type'] ?? '';
+        $targetId = isset($action['target_id']) ? (string)$action['target_id'] : null;
+        $casterInstanceId = $caster['instanceId'] ?? ($action['caster_id'] ?? null);
+
+        $addTarget = function ($refKey, $instanceId) use (&$targets) {
+            $targets[] = ['ref_key' => $refKey, 'refInstanceId' => $instanceId];
+        };
+
+        switch ($targetType) {
+            case 'self':
+                $addTarget($casterType === 'monster' ? 'monsters' : 'characters_data', $casterInstanceId);
+                break;
+
+            case 'enemy':
+                if ($casterType === 'character') {
+                    if ($targetId !== null && isset($monsters[$targetId])) {
+                        $addTarget('monsters', $targetId);
+                    } else {
+                        $firstKey = key($monsters);
+                        if ($firstKey !== null) $addTarget('monsters', $firstKey);
+                    }
+                } else {
+                    if ($targetId !== null && isset($players[$targetId])) {
+                        $addTarget('characters_data', $targetId);
+                    } else {
+                        $firstKey = key($players);
+                        if ($firstKey !== null) $addTarget('characters_data', $firstKey);
+                    }
+                }
+                break;
+
+            case 'ally':
+                if ($casterType === 'character') {
+                    if ($targetId !== null && isset($players[$targetId])) {
+                        $addTarget('characters_data', $targetId);
+                    }
+                } else {
+                    if ($targetId !== null && isset($monsters[$targetId])) {
+                        $addTarget('monsters', $targetId);
+                    }
+                }
+                break;
+
+            case 'party':
+                if ($casterType === 'character') {
+                    foreach (array_keys($players) as $pId) {
+                        $addTarget('characters_data', (string)$pId);
+                    }
+                } else {
+                    foreach (array_keys($monsters) as $mId) {
+                        $addTarget('monsters', (string)$mId);
+                    }
+                }
+                break;
+
+            case 'enemies':
+                if ($casterType === 'character') {
+                    foreach (array_keys($monsters) as $mId) {
+                        $addTarget('monsters', (string)$mId);
+                    }
+                } else {
+                    foreach (array_keys($players) as $pId) {
+                        $addTarget('characters_data', (string)$pId);
+                    }
+                }
+                break;
+
+            default:
+                if ($targetId !== null) {
+                    if (isset($players[$targetId])) {
+                        $addTarget('characters_data', $targetId);
+                    } elseif (isset($monsters[$targetId])) {
+                        $addTarget('monsters', $targetId);
+                    }
+                }
+                break;
+        }
+
+        // LOG: Targets finais
+        Log::channel('battle_debug')->info("[resolveTargets] Final targets", [
+            'caster' => $caster['name'] ?? 'unknown',
+            'targetType' => $targetType,
+            'targets' => $targets
+        ]);
+
+        return $targets;
     }
 }

@@ -18,10 +18,13 @@ class GoblinBehavior implements MonsterBehaviorInterface
 
         // Escolhe a skill
         $skillId = rand(1, 100) <= 50 ? 0 : 4; // 0 = Attack, 4 = Wait
+        $targetType = ($skillId == 0) ? 'enemy' : 'self';
 
         return [
+            'caster_id' => $monsterData['instanceId'],
+            'caster_type' => 'monster',
             'skill_id' => $skillId,
-            'target_type' => 'enemy', // alvo padrão, pode ajustar
+            'target_type' => $targetType,
             'target_id' => key($battleState['players'] ?? []), // primeiro jogador da lista
         ];
     }

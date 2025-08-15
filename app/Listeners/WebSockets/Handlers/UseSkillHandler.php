@@ -32,7 +32,8 @@ class UseSkillHandler implements HandlesUnityEvent
 
         // Cria payload da ação
         $actionPayload = [
-            'character_id' => $characterId,
+            'caster_id' => $characterId,
+            'caster_type' => 'character',
             'skill_id' => (int) $skillId,
             'target_type' => $targetType,
             'target_id' => $targetId,
