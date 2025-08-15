@@ -2,28 +2,33 @@
 
 namespace App\Providers;
 
-use App\Battle\BattleManager;
-use Laravel\Octane\Facades\Octane;
 use Illuminate\Support\ServiceProvider;
+use Laravel\Octane\Facades\Octane;
+use App\Battle\BattleManager;
+use Illuminate\Support\Facades\Log;
 
 class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        //
+        // Singleton para reusar a mesma instância dentro do worker Octane
+        $this->app->singleton(BattleManager::class, function ($app) {
+            return new BattleManager();
+        });
     }
 
     public function boot(): void
     {
-        $battleManager = new BattleManager();
+        // Resolve a instância singleton (evita new BattleManager() em cada tick)
+        $battleManager = app(BattleManager::class);
 
-        // === Processa ações de jogadores a cada 2 segundos ===
+        /* // === Processa ações de jogadores a cada 2 segundos ===
         Octane::tick('battle-users-ticker', function () use ($battleManager) {
             $battleIds = $battleManager->getActiveBattles();
             foreach ($battleIds as $battleId) {
                 $hasActions = $battleManager->processBattleUsers($battleId);
                 if ($hasActions) {
-                    \Illuminate\Support\Facades\Log::info("[BattleUsersTicker] Processed actions for battle $battleId");
+                    Log::info("[BattleUsersTicker] Processed actions for battle $battleId");
                 }
             }
         }, 2);
@@ -34,14 +39,14 @@ class AppServiceProvider extends ServiceProvider
             foreach ($battleIds as $battleId) {
                 $processed = $battleManager->processBattleMonsters($battleId);
                 if ($processed) {
-                    \Illuminate\Support\Facades\Log::info("[BattleMonstersTicker] Processed monsters for battle $battleId");
+                    Log::info("[BattleMonstersTicker] Processed monsters for battle $battleId");
                 }
             }
-        }, 3);
+        }, 3);*/
 
-        // === Limpa batalhas antigas a cada 10 segundos ===
-        /*Octane::tick('battle-cleanup-ticker', function () use ($battleManager) {
-            $battleManager->cleanupOldBattles(3600);
-        }, 10);*/
+        // (opcional) ticker de cleanup
+        // Octane::tick('battle-cleanup-ticker', function () use ($battleManager) {
+        //     $battleManager->cleanupOldBattles(3600);
+        // }, 10);
     }
 }
