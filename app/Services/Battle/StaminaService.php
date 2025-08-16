@@ -46,6 +46,7 @@ class StaminaService
         $startTime = (int) ($parsed['start_time'] ?? 0);
         $initial = (float) ($parsed['initial_stamina'] ?? 0);
         $sMax = (float) ($parsed['max_stamina'] ?? 0);
+        //$sMax = 50 + ($sab - 1) * (650.0 / 299.0);
         $agi = (float) ($parsed['agility'] ?? 0);
         $agi = max(1.0, $agi);
 
@@ -57,12 +58,22 @@ class StaminaService
         Log::info("📊 [getCurrentStamina] Dados extraídos:", compact('startTime', 'initial', 'sMax', 'agi', 'elapsed', 'used')); // incluído used no log (NOVO)
 
         // Constantes
-        $minRate = 1;           // menor taxa (agi = 1)
-        $maxRate = 14;          // maior taxa (agi = 300)
+        /*$minRate = 3;      // regen mínima com agi=1
+        $maxRate = 20;     // regen máxima com agi=300
         $maxAgi = 300;          // agilidade máxima
-        $alpha = 0.6;           // suavidade da curva de agilidade
-        $beta = 0.4;            // influência do quanto a barra está cheia
-        $B = 1.7;               // máximo multiplicador do betaFactor (aumento máximo da taxa)
+        $alpha   = 0.3;    // curva acelerada para agilidade
+        $beta    = 0.45;   // influência suavizada da sabedoria
+        $B = 1.7;*/               // máximo multiplicador do betaFactor (aumento máximo da taxa)
+
+        //valores deepsk
+
+        $minRate = 3.31;      // Taxa mínima (Agi=1)
+        $maxRate = 30.69;     // Taxa máxima (Agi=300)
+        $maxAgi = 300;        // Agilidade máxima
+        $alpha = 1;           // Comportamento linear
+        $beta = 0.4;          // Influência da stamina atual
+        $B = 2.5;             // Máximo multiplicador do betaFactor
+
 
         // Cálculo da taxa base de regeneração (sem fator beta)
         // Calcula fator baseado na agilidade (curva suavizada pelo alpha)
