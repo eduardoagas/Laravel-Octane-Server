@@ -131,7 +131,8 @@ class BattleManager
                     $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                     $targetRef = $targetJson ? json_decode($targetJson, true) : null;
 
-                    $battleActions->executeAction($caster, $skillId, $targetRef, $battleId, ($caster['type'] ?? 'character'));
+                    $someoneDied = $battleActions->executeAction($caster, $skillId, $targetRef, $battleId, ($caster['type'] ?? 'character'));
+
 
                     $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                     if ($freshJson) {
@@ -147,6 +148,9 @@ class BattleManager
                             'targetKey' => $targetKey,
                             'targetId' => $targetId
                         ]);
+                    }
+                    if ($someoneDied) {
+                        $this->checkBattleEnd($battleId);
                     }
                 }
 
@@ -242,7 +246,8 @@ class BattleManager
                     $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                     $targetRef = $targetJson ? json_decode($targetJson, true) : null;
 
-                    $battleActions->executeAction($monster, $skillId, $targetRef, $battleId, 'monster');
+                    $someoneDied = $battleActions->executeAction($monster, $skillId, $targetRef, $battleId, 'monster');
+
 
                     $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                     if ($freshJson) {
@@ -258,6 +263,9 @@ class BattleManager
                             'targetKey' => $targetKey,
                             'targetId' => $targetId
                         ]);
+                    }
+                    if ($someoneDied) {
+                        $this->checkBattleEnd($battleId);
                     }
                 }
 
@@ -373,5 +381,41 @@ class BattleManager
         ]);
 
         return $targets;
+    }
+
+    public function checkBattleEnd(string $battleId): void
+    {
+        $playersRaw = Redis::hgetall("battle:$battleId:characters_data");
+        $monstersRaw = Redis::hgetall("battle:$battleId:monsters");
+
+        $allPlayersDead = true;
+        foreach ($playersRaw as $playerJson) {
+            $player = json_decode($playerJson, true);
+            if (($player['hp'] ?? 0) > 0) {
+                $allPlayersDead = false;
+                break;
+            }
+        }
+
+        $allMonstersDead = true;
+        foreach ($monstersRaw as $monsterJson) {
+            $monster = json_decode($monsterJson, true);
+            if (($monster['hp'] ?? 0) > 0) {
+                $allMonstersDead = false;
+                break;
+            }
+        }
+
+        if ($allPlayersDead) {
+            Log::info("[BattleManager] Todos os jogadores morreram na batalha $battleId. Finalizando...");
+            $this->finishBattle($battleId);
+            return;
+        }
+
+        if ($allMonstersDead) {
+            Log::info("[BattleManager] Todos os monstros morreram na batalha $battleId. Jogadores venceram!");
+            $this->finishBattle($battleId);
+            return;
+        }
     }
 }

@@ -17,9 +17,10 @@ class BattleActions
         $targets, // Pode ser um único alvo (array associativo) ou vários (array de arrays)
         string $battleId,
         string $casterType
-    ): void {
+    ): bool { // retorna true se alguém morrer {
         $skillService = new SkillService();
         $globalMessages = [];
+        $someoneDied = false; // flag para retornar
 
         try {
             // Garantir que sempre teremos um array de targets
@@ -54,6 +55,7 @@ class BattleActions
 
                 if ($target && isset($target['hp']) && $target['hp'] <= 0) {
                     $globalMessages[] = "{$targetName} morreu!";
+                    $someoneDied = true; // marca que alguém morreu
                 }
 
                 $allResults[] = [
@@ -108,6 +110,7 @@ class BattleActions
             Log::error("[BattleActions] Erro inesperado: " . $e->getMessage(), ['exception' => $e]);
             self::broadcastError($battleId, ["Erro inesperado ao executar ação"]);
         }
+        return $someoneDied;
     }
 
 
