@@ -91,14 +91,25 @@ class SkillService
             $this->checkCooldown($battleId, $casterId, $skill['post_delay']);
         }
 
-        // Verifica stamina
+        // Verifica stamina (leitura inicial)
         $currentStamina = $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType);
         if ($currentStamina < $skill['stamina_cost']) {
+            // Se já estava insuficiente, corta aqui (mantém comportamento anterior).
             throw new InsufficientStaminaException("Stamina insuficiente ({$currentStamina} / {$skill['stamina_cost']})");
         }
 
-        // Consome stamina
-        $this->staminaService->consumeStamina($battleId, $casterId, $skill['stamina_cost'], $casterType);
+        // Consome stamina (NOVO: operação atômica via Lua no StaminaService)
+        // NOTE: consumeStamina agora retorna a stamina **após** o consumo (current_after) ou null em caso de falha/insuficiente
+        $currentAfterConsumption = $this->staminaService->consumeStamina($battleId, $casterId, $skill['stamina_cost'], $casterType);
+
+        // NOVO: trata condição de corrida (race) — se outro consumidor gastou antes, o Lua pode negar o consumo e retornar null
+        if ($currentAfterConsumption === null) {
+            // Lança exceção igual ao caso de insuficiência: mantém código chamador limpo
+            throw new InsufficientStaminaException("Stamina insuficiente (race condition detectada ao tentar consumir)");
+        }
+
+        // Agora $currentAfterConsumption contém a stamina **após** o gasto aplicado
+        // Não usamos/alteramos initial_stamina aqui (Opção A): o StaminaService atualiza used_stamina_total internamente.
 
         if (!$target) {
             throw new \InvalidArgumentException("Target is required for skill {$skill['name']}");
@@ -110,7 +121,7 @@ class SkillService
         $luaPath = storage_path("redis_scripts/battle_skill.lua");
         $luaScript = file_get_contents($luaPath);
 
-        $resultPayload = [];
+        //$resultPayload = [];
 
         if ($skill['type'] === 'physical' || $skill['type'] === 'magical') {
             if (!$target) {
@@ -150,11 +161,31 @@ class SkillService
             throw new \RuntimeException($result['error']);
         }
 
+        // NOVO: opcional — ler used_stamina_total atualizado do Redis para incluir no payload
+        // Isso permite que o cliente sincronize usando start_time + initial_stamina + used_stamina_total
+        $staminaField = "{$casterType}:{$casterId}";
+        $staminaKey = "battle:$battleId:stamina_data";
+        $staminaRaw = Redis::hget($staminaKey, $staminaField);
+        $usedStaminaTotal = null;
+        if ($staminaRaw) {
+            $stParsed = json_decode($staminaRaw, true);
+            $usedStaminaTotal = isset($stParsed['used_stamina_total']) ? (float)$stParsed['used_stamina_total'] : null;
+        }
+
+        // Retorna payload de resultado da skill
+        // NOTA: "initial_stamina" era retornado antes; isso mudaria a semântica. Para compatibilidade mínima,
+        // mantemos 'initial_stamina' mas agora ele representa o baseline (não atualizado pelo consumo).
+        // NOVO: adicionamos 'current_stamina_after' (stamina após a aplicação do custo)
+        // NOVO: adicionamos 'used_stamina_total' (útil para o cliente sincronizar caso queira)
         return [
             'battle_id' => $battleId,
             'caster_id' => $casterId,
             'skill_id' => $skillId,
-            'current_stamina' => $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType),
+            // NOVO/ATUALIZADO: current_stamina agora representa o valor **após** o consumo
+            'current_stamina' => $currentAfterConsumption,
+            // MANTIDO (mas atenção: semântica mudou — é o baseline inicial, não o snapshot após consumo)
+            'initial_stamina' => null, // MANTIDO POR COMPATIBILIDADE (antigo uso). Coloque null para evitar confusão.
+            'used_stamina_total' => $usedStaminaTotal, // NOVO: retorna o usado acumulado
             'pre_delay' => $skill['pre_delay'],
             'post_delay' => $skill['post_delay'],
             'someoneDied' => $result['target_died'] ?? false,

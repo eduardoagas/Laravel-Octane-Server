@@ -16,6 +16,8 @@ class StaminaService
             'initial_stamina' => 0,
             'max_stamina' => $maxStamina,
             'agility' => $agility,
+            // NOVO: campo para acumular consumo sem mexer no start_time
+            'used_stamina_total' => 0,
         ];
     }
 
@@ -46,9 +48,13 @@ class StaminaService
         $sMax = (float) ($parsed['max_stamina'] ?? 0);
         $agi = (float) ($parsed['agility'] ?? 0);
         $agi = max(1.0, $agi);
+
+        // NOVO: lê o consumo acumulado que agora é subtraído do resultado
+        $used = (float) ($parsed['used_stamina_total'] ?? 0.0);
+
         $elapsed = now()->timestamp - $startTime;
 
-        Log::info("📊 [getCurrentStamina] Dados extraídos:", compact('startTime', 'initial', 'sMax', 'agi', 'elapsed'));
+        Log::info("📊 [getCurrentStamina] Dados extraídos:", compact('startTime', 'initial', 'sMax', 'agi', 'elapsed', 'used')); // incluído used no log (NOVO)
 
         // Constantes
         $minRate = 1;           // menor taxa (agi = 1)
@@ -72,53 +78,94 @@ class StaminaService
         // Recuperação
         // Quantidade de stamina regenerada desde o último cálculo
         $recovered = $baseRegen * $betaFactor * $elapsed;
-        // Estamina atualizada limitada ao máximo permitido
-        $stamina = min($initial + $recovered, $sMax);
 
+        // NOVO: subtrai used_stamina_total para evitar double-counting quando o start_time é fixo
+        $stamina = $initial + $recovered - $used;
+
+        // Estamina atualizada limitada ao máximo permitido
+        $stamina = min(max(0.0, $stamina), $sMax);
 
         Log::info("✅ [getCurrentStamina] Resultado calculado:", [
             'stamina_calculada' => $stamina,
-            'stamina_limitada' => min($stamina, $sMax)
+            'stamina_limitada' => $stamina,
+            'initial_stamina' => $initial,
+            'recovered' => $recovered,
+            'used_stamina_total' => $used, // NOVO: log do usado
         ]);
 
-        return min($stamina, $sMax);
+        return $stamina;
     }
 
-    public static function consumeStamina(string $battleId, string $id, float $amount, string $type = 'character'): bool
+    /**
+     * Consume stamina atomically using a Lua script stored in storage/redis_scripts/consume_stamina.lua
+     *
+     * - NOVO: agora incrementamos used_stamina_total (em vez de sobrescrever initial_stamina).
+     * - NOVO: operação feita via Lua para evitar race conditions (atomicidade).
+     * - Retorna o valor de stamina atual depois do consumo (float) ou null se insuficiente/erro.
+     */
+    public static function consumeStamina(string $battleId, string $id, float $amount, string $type = 'character'): ?float
     {
         $field = "{$type}:{$id}";
         $key = "battle:$battleId:stamina_data";
-        $data = Redis::hget($key, $field);
 
-        Log::info("🛠️ [consumeStamina] Tentando consumir stamina", [
+        Log::info("🛠️ [consumeStamina] Tentando consumir stamina (via Lua ATÔMICO)", [
             'field' => $field,
             'amount' => $amount,
-            'raw_data' => $data,
         ]);
 
-        if (!$data) return false;
-
-        $parsed = json_decode($data, true);
-        $currentStamina = self::getCurrentStamina($battleId, $id, $type);
-
-        if ($currentStamina < $amount) {
-            Log::warning("❌ [consumeStamina] Stamina insuficiente", [
-                'disponível' => $currentStamina,
-                'necessária' => $amount
-            ]);
-            return false;
+        // Carrega script Lua a partir do storage (NOVO: arquivo separado)
+        $luaPath = storage_path("redis_scripts/consume_stamina.lua");
+        if (!file_exists($luaPath)) {
+            Log::error("[consumeStamina] Lua script não encontrado em: $luaPath");
+            return null;
         }
+        $luaScript = file_get_contents($luaPath);
 
-        // Gasto aprovado: resetar start_time e stamina atual
-        $parsed['initial_stamina'] = $currentStamina - $amount;
-        $parsed['start_time'] = now()->timestamp;
+        // Passa timestamp do servidor para o script (evita diferença de tempo dentro do script)
+        $nowTs = now()->timestamp;
 
-        Redis::hset($key, $field, json_encode($parsed));
+        try {
+            // Executa o script Lua de forma atômica
+            // KEYS: 1 (hash key), ARGV: field, amount, nowTs
+            $raw = Redis::eval($luaScript, 1, $key, $field, (string)$amount, (string)$nowTs);
 
-        Log::info("✅ [consumeStamina] Stamina atualizada com sucesso", [
-            'nova_stamina' => $parsed['initial_stamina']
-        ]);
+            // Esperamos que o script retorne JSON (veja o arquivo Lua abaixo)
+            $decoded = json_decode($raw, true);
 
-        return true;
+            if (!$decoded) {
+                Log::error("[consumeStamina] Resposta do script Lua não pôde ser decodificada", [
+                    'raw' => $raw
+                ]);
+                return null;
+            }
+
+            if (isset($decoded['error']) && $decoded['error'] === 'insufficient') {
+                Log::warning("❌ [consumeStamina] Stamina insuficiente (detectado no Lua)", [
+                    'field' => $field,
+                    'current' => $decoded['current'] ?? null,
+                    'needed' => $amount
+                ]);
+                return null;
+            }
+
+            // NOVO: script retorna used (novo used_stamina_total) e current_after (stamina após consumir)
+            $newUsed = isset($decoded['used']) ? (float)$decoded['used'] : null;
+            $currentAfter = isset($decoded['current_after']) ? (float)$decoded['current_after'] : null;
+
+            Log::info("✅ [consumeStamina] Consumo aplicado (via Lua)", [
+                'field' => $field,
+                'amount' => $amount,
+                'new_used_stamina_total' => $newUsed,
+                'current_after' => $currentAfter
+            ]);
+
+            // Retorna a stamina atual após o consumo (pode ser usada para broadcast imediato)
+            return $currentAfter;
+        } catch (\Throwable $e) {
+            Log::error("[consumeStamina] Erro ao executar script Lua: " . $e->getMessage(), [
+                'exception' => $e
+            ]);
+            return null;
+        }
     }
 }

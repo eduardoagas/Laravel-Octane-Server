@@ -31,7 +31,9 @@ class BattleActions
             $skillName = $skillService->getSkillName($skillId);
 
             $allResults = [];
-
+            // NOVO: map instanceId => ['type' => 'character'|'monster', 'used_stamina_total' => float, 'current_stamina' => float|null]
+            $staminaUpdates = [];
+            $casterCurrentStamina = null;
 
             Log::channel('battle_debug')->info("[executeAction] Caster: $casterName usando skill $skillName", [
                 'targets' => $targetsList
@@ -44,17 +46,39 @@ class BattleActions
                     'targetData' => $target,
                     'casterId' => $caster['instanceId']
                 ]);
+
                 $result = $skillService->applySkill($caster, $target, $battleId, $skillId, $casterType, $targetType);
+
                 Log::channel('battle_debug')->info("[executeAction] Result AFTER applySkill", [
                     'targetId' => $target['instanceId'],
                     'result' => $result
                 ]);
 
-
-                // captura stamina atual do caster (retornada pelo applySkill)
+                // captura current_stamina para broadcast depurativo (último valor válido)
                 if (isset($result['current_stamina'])) {
                     $casterCurrentStamina = $result['current_stamina'];
                 }
+
+                // NOVO: Se o resultado trouxe used_stamina_total, armazena associado ao caster_id retornado
+                // (anteriormente guardávamos initial_stamina; agora usamos used_stamina_total)
+                if (isset($result['used_stamina_total'])) {
+                    $resCasterId = (string)($result['caster_id'] ?? $caster['instanceId'] ?? '');
+                    if ($resCasterId !== '') {
+                        $staminaUpdates[$resCasterId] = [
+                            'type' => $casterType, // usa o tipo do caster para diferenciar character/monster
+                            'used_stamina_total' => (float)$result['used_stamina_total'],
+                            // NOVO: salva também current_stamina retornado pelo SkillService (pós consumo) para broadcast imediato
+                            'current_stamina' => isset($result['current_stamina']) ? (float)$result['current_stamina'] : null,
+                        ];
+                        Log::channel('battle_debug')->info("[executeAction] Stamina update registrado", [
+                            'casterId' => $resCasterId,
+                            'type' => $casterType,
+                            'used_stamina_total' => $result['used_stamina_total'],
+                            'current_stamina' => $result['current_stamina'] ?? null
+                        ]);
+                    }
+                }
+
                 $targetName = $target['name'] ?? ($target['username'] ?? 'Desconhecido');
                 $targetTypeStr = ($targetType ?? 'character') === 'monster' ? 'Monstro' : 'Jogador';
 
@@ -88,22 +112,100 @@ class BattleActions
 
             // Estado atualizado dos personagens
             $playersPayload = [];
+
             foreach (Redis::hgetall("battle:$battleId:characters_data") as $playerId => $playerJson) {
                 $playerData = json_decode($playerJson, true);
-                $playersPayload[] = [
+
+                // constrói o payload do player
+                $playerPayload = [
                     'instanceId' => (string)$playerId,
                     'currentHp' => (int)($playerData['hp'] ?? 0),
                 ];
+
+                // NOVO: Se houver um update de used_stamina_total para esse player (do tipo 'character'), anexa staminaData
+                $playerIdKey = (string)$playerId;
+                if (isset($staminaUpdates[$playerIdKey]) && $staminaUpdates[$playerIdKey]['type'] === 'character') {
+                    // tenta ler dados completos de stamina no Redis para fornecer start_time e initial_stamina ao cliente
+                    $staminaHashKey = "battle:$battleId:stamina_data";
+                    $staminaField = "character:{$playerIdKey}"; // campo usado no hash
+                    $stRaw = Redis::hget($staminaHashKey, $staminaField);
+
+                    if ($stRaw) {
+                        $stParsed = json_decode($stRaw, true);
+                        // NOVO: anexamos used_stamina_total (o cliente deve subtrair desse baseline) e os campos de sincronização
+                        $playerPayload['staminaData'] = [
+                            'initial_stamina' => (float)($stParsed['initial_stamina'] ?? 0),
+                            'start_time' => (int)($stParsed['start_time'] ?? 0),
+                            'used_stamina_total' => (float)$staminaUpdates[$playerIdKey]['used_stamina_total'],
+                            // NOVO: opcionalmente incluímos current_stamina pós-consumo para exibição imediata
+                            'current_stamina' => $staminaUpdates[$playerIdKey]['current_stamina'] ?? null,
+                        ];
+
+                        Log::channel('battle_debug')->info("[executeAction] Anexando staminaData (character) ao payload", [
+                            'playerId' => $playerIdKey,
+                            'staminaData' => $playerPayload['staminaData']
+                        ]);
+                    } else {
+                        // Fallback: se não achamos o hash (improvável), enviamos ao menos o used_stamina_total
+                        $playerPayload['staminaData'] = [
+                            'used_stamina_total' => (float)$staminaUpdates[$playerIdKey]['used_stamina_total'],
+                            'current_stamina' => $staminaUpdates[$playerIdKey]['current_stamina'] ?? null,
+                        ];
+                        Log::channel('battle_debug')->warning("[executeAction] stamina_data não encontrada no Redis para character; enviando fallback used_stamina_total", [
+                            'playerId' => $playerIdKey,
+                            'stamina_update' => $staminaUpdates[$playerIdKey]
+                        ]);
+                    }
+                }
+
+                $playersPayload[] = $playerPayload;
             }
 
             // Estado atualizado dos monstros
             $enemiesPayload = [];
             foreach (Redis::hgetall("battle:$battleId:monsters") as $monsterId => $monsterJson) {
                 $monsterData = json_decode($monsterJson, true);
-                $enemiesPayload[] = [
+
+                // cria monster payload (NOVO: agora construímos o payload completo antes de push)
+                $monsterPayload = [
                     'instanceId' => (string)$monsterId,
                     'isAlive' => isset($monsterData['hp']) && $monsterData['hp'] > 0,
                 ];
+
+                // NOVO: Se houver um update de used_stamina_total para esse monster, anexa staminaData
+                $monsterIdKey = (string)$monsterId;
+                if (isset($staminaUpdates[$monsterIdKey]) && $staminaUpdates[$monsterIdKey]['type'] === 'monster') {
+                    $staminaHashKey = "battle:$battleId:stamina_data";
+                    $staminaField = "monster:{$monsterIdKey}";
+                    $stRaw = Redis::hget($staminaHashKey, $staminaField);
+
+                    if ($stRaw) {
+                        $stParsed = json_decode($stRaw, true);
+                        $monsterPayload['staminaData'] = [
+                            'initial_stamina' => (float)($stParsed['initial_stamina'] ?? 0),
+                            'start_time' => (int)($stParsed['start_time'] ?? 0),
+                            'used_stamina_total' => (float)$staminaUpdates[$monsterIdKey]['used_stamina_total'],
+                            'current_stamina' => $staminaUpdates[$monsterIdKey]['current_stamina'] ?? null,
+                        ];
+
+                        Log::channel('battle_debug')->info("[executeAction] Anexando staminaData (monster) ao payload", [
+                            'monsterId' => $monsterIdKey,
+                            'staminaData' => $monsterPayload['staminaData']
+                        ]);
+                    } else {
+                        // fallback
+                        $monsterPayload['staminaData'] = [
+                            'used_stamina_total' => (float)$staminaUpdates[$monsterIdKey]['used_stamina_total'],
+                            'current_stamina' => $staminaUpdates[$monsterIdKey]['current_stamina'] ?? null,
+                        ];
+                        Log::channel('battle_debug')->warning("[executeAction] stamina_data não encontrada no Redis para monster; enviando fallback used_stamina_total", [
+                            'monsterId' => $monsterIdKey,
+                            'stamina_update' => $staminaUpdates[$monsterIdKey]
+                        ]);
+                    }
+                }
+
+                $enemiesPayload[] = $monsterPayload;
             }
 
             // Monta payload final
@@ -145,7 +247,6 @@ class BattleActions
         }
         return $someoneDied;
     }
-
 
     private static function broadcastError(string $battleId, array $messages): void
     {

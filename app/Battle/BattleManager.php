@@ -150,7 +150,7 @@ class BattleManager
                         ]);
                     }
                     if ($someoneDied) {
-                        $this->checkBattleEnd($battleId);
+                        //$this->checkBattleEnd($battleId);
                     }
                 }
 
@@ -265,7 +265,7 @@ class BattleManager
                         ]);
                     }
                     if ($someoneDied) {
-                        $this->checkBattleEnd($battleId);
+                        //$this->checkBattleEnd($battleId);
                     }
                 }
 
