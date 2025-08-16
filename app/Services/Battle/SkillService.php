@@ -77,12 +77,12 @@ class SkillService
         ?array $target,
         string $battleId,
         int $skillId,
-        string $casterType // 'character' ou 'monster'
+        string $casterType, // 'character' ou 'monster'
+        string $targetType,
     ): array {
         if (!isset($this->skills[$skillId])) {
             throw new \InvalidArgumentException("Skill $skillId not found");
         }
-
         $skill = $this->skills[$skillId];
         $casterId = $caster['instanceId'];
 
@@ -100,6 +100,16 @@ class SkillService
         // Consome stamina
         $this->staminaService->consumeStamina($battleId, $casterId, $skill['stamina_cost'], $casterType);
 
+        if (!$target) {
+            throw new \InvalidArgumentException("Target is required for skill {$skill['name']}");
+        }
+
+        $targetKey = ($targetType ?? 'character') === 'monster' ? 'monsters' : 'characters_data';
+        $redisKey = "battle:$battleId:$targetKey";
+
+        $luaPath = storage_path("redis_scripts/battle_skill.lua");
+        $luaScript = file_get_contents($luaPath);
+
         $resultPayload = [];
 
         if ($skill['type'] === 'physical' || $skill['type'] === 'magical') {
@@ -110,40 +120,34 @@ class SkillService
             $attackAttribute = $skill['type'] === 'physical' ? 'pattack' : 'mattack';
             $baseAttack = $caster[$attackAttribute] ?? 0;
             $power = $skill['power'] + $baseAttack;
-
-            $damage = max(0, $power - ($target['defense'] ?? 0));
-            $target['hp'] = max(0, ($target['hp'] ?? 0) - $damage);
-
-            $this->saveEntityState($battleId, $target);
-
-            $resultPayload['target_hp'] = $target['hp'];
-            $resultPayload['damage_dealt'] = $damage;
         } elseif ($skill['type'] === 'buff') {
-            $buff = [
-                'skill_id' => $skillId,
-                'stat' => $skill['stat'],
-                'bonus' => $skill['bonus'],
-                'duration' => $skill['duration'],
-            ];
-            Redis::hset("battle:{$battleId}:buffs", $casterId, json_encode($buff));
-            $resultPayload['buff_applied'] = $buff;
+            if (!$target) {
+                throw new \InvalidArgumentException("Target is required for buff skills");
+            }
+            $power = $skill['bonus'];
         } elseif ($skill['type'] === 'heal') {
             if (!$target) {
                 throw new \InvalidArgumentException("Target is required for heal skills");
             }
+            $power = $skill['power'] + $caster['mattack'];
+        }
 
-            $currentHp = $target['hp'] ?? 0;
-            $maxHp = $target['max_hp'] ?? 100; // default max_hp se não existir
+        $resultJson = Redis::eval(
+            $luaScript,
+            1,
+            $redisKey,
+            $skill['type'],
+            $casterId,
+            $target['instanceId'],
+            $power,
+            $skill['stat'] ?? '',
+            $skill['duration'] ?? 0
+        );
 
-            $healAmount = $skill['power'];
-            $newHp = min($maxHp, $currentHp + $healAmount);
-            $actualHealed = $newHp - $currentHp;
+        $result = json_decode($resultJson, true);
 
-            $target['hp'] = $newHp;
-            $this->saveEntityState($battleId, $target);
-
-            $resultPayload['target_hp'] = $newHp;
-            $resultPayload['healed_amount'] = $actualHealed;
+        if (isset($result['error'])) {
+            throw new \RuntimeException($result['error']);
         }
 
         return [
@@ -153,12 +157,11 @@ class SkillService
             'current_stamina' => $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType),
             'pre_delay' => $skill['pre_delay'],
             'post_delay' => $skill['post_delay'],
-            'action_info_use' => sprintf(
-                "%s uses %s!",
-                $caster['name'] ?? 'Unknown',
-                $skill['name']
-            ),
-            'action_info_result' => $this->buildActionResultMessage($skill['type'], $caster, $target, $resultPayload)
+            'someoneDied' => $result['target_died'] ?? false,
+            'target_hp' => $result['current_hp'] ?? null,
+            'damage_dealt' => $result['damage_dealt'] ?? null,
+            'healed_amount' => $result['healed_amount'] ?? null,
+            'buff_applied' => $result['buff_applied'] ?? null,
         ];
     }
 

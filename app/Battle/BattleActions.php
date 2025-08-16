@@ -16,7 +16,8 @@ class BattleActions
         int $skillId,
         $targets, // Pode ser um único alvo (array associativo) ou vários (array de arrays)
         string $battleId,
-        string $casterType
+        string $casterType,
+        string $targetType,
     ): bool { // retorna true se alguém morrer {
         $skillService = new SkillService();
         $globalMessages = [];
@@ -31,15 +32,31 @@ class BattleActions
 
             $allResults = [];
 
+
             Log::channel('battle_debug')->info("[executeAction] Caster: $casterName usando skill $skillName", [
                 'targets' => $targetsList
             ]);
 
             foreach ($targetsList as &$target) {
-                $result = $skillService->applySkill($caster, $target, $battleId, $skillId, $casterType);
+                Log::channel('battle_debug')->info("[executeAction] Target BEFORE applySkill", [
+                    'targetId' => $target['instanceId'],
+                    'targetType' => $targetType,
+                    'targetData' => $target,
+                    'casterId' => $caster['instanceId']
+                ]);
+                $result = $skillService->applySkill($caster, $target, $battleId, $skillId, $casterType, $targetType);
+                Log::channel('battle_debug')->info("[executeAction] Result AFTER applySkill", [
+                    'targetId' => $target['instanceId'],
+                    'result' => $result
+                ]);
 
+
+                // captura stamina atual do caster (retornada pelo applySkill)
+                if (isset($result['current_stamina'])) {
+                    $casterCurrentStamina = $result['current_stamina'];
+                }
                 $targetName = $target['name'] ?? ($target['username'] ?? 'Desconhecido');
-                $targetTypeStr = ($target['type'] ?? 'character') === 'monster' ? 'Monstro' : 'Jogador';
+                $targetTypeStr = ($targetType ?? 'character') === 'monster' ? 'Monstro' : 'Jogador';
 
                 $actionInfoUse = $result['action_info_use'] ?? "$casterName usou $skillName";
                 $actionInfoResult = $result['action_info_result'] ?? '';
@@ -102,6 +119,22 @@ class BattleActions
 
             BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
             Log::info("[BattleActions] Broadcast enviado para batalha $battleId");
+
+            // broadcast depurativo: staminacheck (apenas se conseguimos um valor de stamina)
+            if ($casterCurrentStamina !== null) {
+                $staminaPayload = [
+                    'caster' => [
+                        'instanceId' => (string)($caster['instanceId'] ?? ''),
+                        'type' => $casterType,
+                        'current_stamina' => $casterCurrentStamina,
+                    ],
+                ];
+
+                //BattleBroadcaster::broadcastToBattle($battleId, $staminaPayload, 'staminacheck');
+                Log::channel('battle_debug')->info("[BattleActions] Broadcast 'staminacheck' enviado para batalha $battleId", [
+                    'staminaPayload' => $staminaPayload
+                ]);
+            }
         } catch (InsufficientStaminaException $e) {
             self::broadcastError($battleId, ["Stamina insuficiente"]);
         } catch (SkillCooldownException $e) {

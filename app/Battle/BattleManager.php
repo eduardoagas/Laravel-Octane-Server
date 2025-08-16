@@ -112,7 +112,7 @@ class BattleManager
                 'action' => $action
             ]);
 
-            $targets = $this->resolveTargets($action, $caster, $players, $monsters);
+            $targets = $this->resolveTargets($action, $caster, $players, $monsters, 'character');
 
             // LOG: targets resolvidos
             Log::channel('battle_debug')->info("[processBattleUsers] Targets resolved", [
@@ -130,8 +130,8 @@ class BattleManager
 
                     $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                     $targetRef = $targetJson ? json_decode($targetJson, true) : null;
-
-                    $someoneDied = $battleActions->executeAction($caster, $skillId, $targetRef, $battleId, ($caster['type'] ?? 'character'));
+                    Log::channel('battle_debug')->info("[BattleManager before execute action] TARGETREF = " . $targetJson);
+                    $someoneDied = $battleActions->executeAction($caster, $skillId, $targetRef, $battleId, 'character', $t['category']);
 
 
                     $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
@@ -222,7 +222,7 @@ class BattleManager
             }
 
 
-            $targets = $this->resolveTargets($action, $monster, $players, $monsters);
+            $targets = $this->resolveTargets($action, $monster, $players, $monsters, 'monster');
 
             // LOG: targets resolvidos
             Log::channel('battle_debug')->info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) targets resolvidos", [
@@ -246,7 +246,7 @@ class BattleManager
                     $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                     $targetRef = $targetJson ? json_decode($targetJson, true) : null;
 
-                    $someoneDied = $battleActions->executeAction($monster, $skillId, $targetRef, $battleId, 'monster');
+                    $someoneDied = $battleActions->executeAction($monster, $skillId, $targetRef, $battleId, 'monster', $t['category']);
 
 
                     $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
@@ -291,16 +291,21 @@ class BattleManager
         }
     }
 
-    private function resolveTargets(array $action, array $caster, array $players, array $monsters): array
+    private function resolveTargets(array $action, array $caster, array $players, array $monsters, string $casterType): array
     {
         $targets = [];
-        $casterType = $action['caster_type'] ?? ($caster['type'] ?? 'character');
         $targetType = $action['target_type'] ?? '';
         $targetId = isset($action['target_id']) ? (string)$action['target_id'] : null;
         $casterInstanceId = $caster['instanceId'] ?? ($action['caster_id'] ?? null);
 
         $addTarget = function ($refKey, $instanceId) use (&$targets) {
-            $targets[] = ['ref_key' => $refKey, 'refInstanceId' => $instanceId];
+            // Define o tipo genérico a partir da refKey
+            $category = $refKey === 'monsters' ? 'monster' : 'character';
+            $targets[] = [
+                'ref_key' => $refKey,
+                'refInstanceId' => $instanceId,
+                'category' => $category
+            ];
         };
 
         switch ($targetType) {
@@ -382,6 +387,7 @@ class BattleManager
 
         return $targets;
     }
+
 
     public function checkBattleEnd(string $battleId): void
     {
