@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use App\Services\Battle\StaminaService;
 use App\Services\Battle\BattleActions;
+use App\Services\Battle\SkillService;
 
 class BattleManager
 {
@@ -216,7 +217,8 @@ class BattleManager
             }
 
             // Checagem de stamina: se insuficiente, ignora ação
-            $requiredStamina = $action['stamina_cost'] ?? 0;
+            $staminaCost = SkillService::getSkillStaminaCost($action['skill_id']);
+            $requiredStamina = $staminaCost ?? 0;
             if ($currentStamina < $requiredStamina) {
                 Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) não tem stamina suficiente ({$currentStamina} < {$requiredStamina}), ação descartada");
                 continue;

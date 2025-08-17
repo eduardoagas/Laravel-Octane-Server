@@ -13,7 +13,7 @@ class SkillInExecutionHandler implements HandlesUnityEvent
 {
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
     {
-        Log::channel("battle_debug")->info("[SKILL IN EXECUTION] TRIGGERED");
+
         $session = Redis::hgetall("session:$token");
         $battleId = $session['battle_instance_id'] ?? null;
         $characterId = $session['character_id'] ?? null;

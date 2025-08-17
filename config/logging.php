@@ -132,6 +132,11 @@ return [
             'path' => storage_path('logs/battle_debug.log'), // arquivo específico
             'level' => 'debug',              // nível de log
         ],
+        'deprecations' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/deprecations.log'),
+            'level' => 'debug',
+        ],
 
     ],
 
