@@ -66,7 +66,7 @@ class StaminaService
         Log::info("📊 [getCurrentStamina] Dados extraídos:", compact('startTime', 'initial', 'sMax', 'agi', 'elapsed', 'used')); // incluído used no log (NOVO)
 
         // ---------- constantes (MANTER idênticas ao Lua) ----------
-        $minRate = 3.0;      // regen mínima com agi=1
+        $minRate = 2.35;      // regen mínima com agi=1
         $maxRate = 20.0;     // regen máxima com agi=300
         $maxAgi = 300.0;     // agilidade máxima
         $alpha   = 0.3;      // curva acelerada para agilidade

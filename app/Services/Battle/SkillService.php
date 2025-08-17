@@ -27,7 +27,7 @@ class SkillService
             'name' => 'Fire Ball',
             'type' => 'magical',
             'power' => 25, //15-25
-            'stamina_cost' => 8, //5-12 mas acho que 8-12 
+            'stamina_cost' => 11, //5-12 
             'pre_delay' => 500,
             'post_delay' => 1000,
             'level' => 1,
