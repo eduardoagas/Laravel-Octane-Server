@@ -25,7 +25,9 @@ if skillType == "physical" or skillType == "magical" then
     local defense = tonumber(entity['defense']) or 0
     local currentHp = tonumber(entity['hp']) or 0
     local damage = math.max(0, power - defense)
+    damage = math.floor(damage)
     local newHp = math.max(0, currentHp - damage)
+    newHp = math.floor(newHp)
     entity['hp'] = newHp
     result['damage_dealt'] = damage
     if newHp <= 0 then someoneDied = true end
@@ -35,16 +37,17 @@ elseif skillType == "heal" then
     local maxHp = tonumber(entity['max_hp']) or 100
     local currentHp = tonumber(entity['hp']) or 0
     local newHp = math.min(maxHp, currentHp + power)
+    newHp = math.floor(newHp)
     entity['hp'] = newHp
-    result['healed_amount'] = newHp - currentHp
+    result['healed_amount'] = math.floor(newHp - currentHp)
 
 -- Buff
 elseif skillType == "buff" then
     local buff = {
         caster_id = casterId,
         stat = stat ~= "" and stat or "unknown",
-        bonus = power,
-        duration = duration
+        bonus = math.floor(power),
+        duration = math.floor(duration)
     }
     redis.call('HSET', KEYS[1]..":buffs", casterId, cjson.encode(buff))
     result['buff_applied'] = buff
@@ -55,6 +58,6 @@ redis.call('HSET', KEYS[1], targetId, cjson.encode(entity))
 
 -- Resultado final
 result['target_died'] = someoneDied
-result['current_hp'] = entity['hp']
+result['current_hp'] = math.floor(entity['hp'])
 
 return cjson.encode(result)

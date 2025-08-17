@@ -37,7 +37,7 @@ class AppServiceProvider extends ServiceProvider
                     \Illuminate\Support\Facades\Log::info("[BattleMonstersTicker] Processed monsters for battle $battleId");
                 }
             }
-        }, 3);
+        }, 0.5);
 
         // === Limpa batalhas antigas a cada 10 segundos ===
         /*Octane::tick('battle-cleanup-ticker', function () use ($battleManager) {

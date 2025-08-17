@@ -11,7 +11,7 @@ class SkillService
 {
     private StaminaService $staminaService;
 
-    private array $skills = [
+    private static array $skills = [
         0 => [
             'id' => 0,
             'name' => 'Attack',
@@ -20,15 +20,17 @@ class SkillService
             'stamina_cost' => 20,
             'pre_delay' => 0,
             'post_delay' => 500,
+            'level' => 1,
         ],
         1 => [
             'id' => 1,
             'name' => 'Fire Ball',
             'type' => 'magical',
-            'power' => 25,
-            'stamina_cost' => 17,
+            'power' => 25, //15-25
+            'stamina_cost' => 12, //5-12 mas acho que 
             'pre_delay' => 500,
             'post_delay' => 1000,
+            'level' => 1,
         ],
         2 => [
             'id' => 2,
@@ -49,6 +51,7 @@ class SkillService
             'stamina_cost' => 8,
             'pre_delay' => 400,
             'post_delay' => 700,
+            'level' => 1,
         ],
         4 => [
             'id' => 4,
@@ -74,8 +77,8 @@ class SkillService
 
     public static function getSkillStaminaCost(int $skillId): int
     {
-
-        return $skills[$skillId]['stamina_cost'] ?? 0;
+        $cost = self::$skills[$skillId]['stamina_cost'] ?? 0;
+        return $cost;
     }
 
     public function applySkill(
@@ -136,7 +139,14 @@ class SkillService
 
             $attackAttribute = $skill['type'] === 'physical' ? 'pattack' : 'mattack';
             $baseAttack = $caster[$attackAttribute] ?? 0;
-            $power = $skill['power'] + $baseAttack;
+            $damage = $skill['power'] + $baseAttack;
+            $strength = match ($skill['level']) {
+                1 => 'weak',
+                2 => 'medium',
+                3 => 'strong',
+                default => 'medium',
+            };
+            $power = $this->calculateDamage($damage, $strength);
         } elseif ($skill['type'] === 'buff') {
             if (!$target) {
                 throw new \InvalidArgumentException("Target is required for buff skills");
@@ -213,55 +223,20 @@ class SkillService
         Redis::set($redisKey, $now + (int)($postDelay / 1000));
     }
 
-    private function saveEntityState(string $battleId, array $entity)
+
+    private function calculateDamage(float $power, string $strength = 'weak'): float
     {
-        $instanceId = $entity['instanceId'] ?? null;
+        $base = 10 + 1 * $power;
 
-        if (!$instanceId) {
-            Log::error("saveEntityState: entity missing instanceId", ['entity' => $entity]);
-            return;
-        }
+        // Multiplicadores sugeridos
+        $multipliers = [
+            'weak' => 0.9,
+            'medium' => 3.0,
+            'strong' => 5.0,
+        ];
 
-        // Decide se é monstro ou personagem
-        if (($entity['type'] ?? null) === 'monster' || isset($entity['monster_id'])) {
-            Redis::hset("battle:{$battleId}:monsters", (string)$instanceId, json_encode($entity));
+        $mult = $multipliers[$strength] ?? 0.9;
 
-            // Log do HP atual do monstro
-            $hp = $entity['hp'] ?? null;
-            Log::info("Monster HP saved", [
-                'instanceId' => $instanceId,
-                'hp' => $hp,
-                'battleId' => $battleId,
-            ]);
-        } else {
-            Redis::hset("battle:{$battleId}:characters_data", (string)$instanceId, json_encode($entity));
-
-            // Log do HP atual do personagem
-            $hp = $entity['hp'] ?? null;
-            Log::info("Character HP saved", [
-                'instanceId' => $instanceId,
-                'hp' => $hp,
-                'battleId' => $battleId,
-            ]);
-        }
-    }
-
-
-
-    private function buildActionResultMessage(string $type, array $caster, ?array $target, array $resultPayload): string
-    {
-        $casterName = $caster['name'] ?? 'Unknown';
-        $targetName = $target['name'] ?? 'Unknown';
-
-        return match ($type) {
-            'physical', 'magical' =>
-            sprintf("%s inflicts %d damage on %s!", $casterName, $resultPayload['damage_dealt'] ?? 0, $targetName),
-            'heal' =>
-            sprintf("%s heals %s (%d HP)!", $casterName, $targetName, $resultPayload['healed_amount'] ?? 0),
-            'buff' =>
-            sprintf("%s applies %s buff to %s!", $casterName, ucfirst($resultPayload['buff_applied']['stat'] ?? 'unknown'), $targetName),
-            default =>
-            ''
-        };
+        return $base * $mult;
     }
 }

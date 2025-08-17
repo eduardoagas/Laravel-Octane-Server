@@ -133,9 +133,10 @@ return [
             'level' => 'debug',              // nível de log
         ],
         'deprecations' => [
-            'driver' => 'single',
+            'driver' => 'daily',
             'path' => storage_path('logs/deprecations.log'),
             'level' => 'debug',
+            'days' => 1, // mantém no máximo 14 dias de logs
         ],
 
     ],

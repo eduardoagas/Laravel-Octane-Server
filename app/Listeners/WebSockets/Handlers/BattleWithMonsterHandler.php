@@ -65,14 +65,14 @@ class BattleWithMonsterHandler
         $monster = [
             'monster_id' => 123,
             'name' => "Goblin",
-            'maxhp' => 80,
-            'hp' => 80,
+            'maxhp' => 1400,
+            'hp' => 1400,
             'level' => 1,
             'pattack' => 12,
             'mattack' => 6,
             'defense' => 5,
             'stamina' => 25,
-            'agility' => 80,
+            'agility' => 1,
             'type' => 'goblin',
             'instanceId' => (string)$monsterInstanceId,
         ];
