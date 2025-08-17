@@ -62,7 +62,7 @@ class BattleActions
                 // NOVO: Se o resultado trouxe used_stamina_total, armazena associado ao caster_id retornado
                 // (anteriormente guardávamos initial_stamina; agora usamos used_stamina_total)
                 if (isset($result['used_stamina_total'])) {
-                    $resCasterId = (string)($result['caster_id'] ?? $caster['instanceId'] ?? '');
+                    $resCasterId = (string)($result['caster_id'] ?? '');
                     if ($resCasterId !== '') {
                         $staminaUpdates[$resCasterId] = [
                             'type' => $casterType, // usa o tipo do caster para diferenciar character/monster

@@ -26,7 +26,7 @@ class SkillService
             'name' => 'Fire Ball',
             'type' => 'magical',
             'power' => 25,
-            'stamina_cost' => 30,
+            'stamina_cost' => 17,
             'pre_delay' => 500,
             'post_delay' => 1000,
         ],
