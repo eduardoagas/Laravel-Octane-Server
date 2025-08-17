@@ -214,6 +214,13 @@ class BattleManager
                 continue;
             }
 
+            // Checagem de stamina: se insuficiente, ignora ação
+            $requiredStamina = $action['stamina_cost'] ?? 0;
+            if ($currentStamina < $requiredStamina) {
+                Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) não tem stamina suficiente ({$currentStamina} < {$requiredStamina}), ação descartada");
+                continue;
+            }
+
             if (!isset($action['caster_id'])) {
                 $action['caster_id'] = (string)$monsterKey;
             }
