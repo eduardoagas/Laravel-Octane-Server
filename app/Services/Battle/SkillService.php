@@ -72,7 +72,7 @@ class SkillService
     }
     public function getSkillName(int $skillId): string
     {
-        return $this->skills[$skillId]['name'] ?? 'Unknown Skill';
+        return self::$skills[$skillId]['name'] ?? 'Unknown Skill';
     }
 
     public static function getSkillStaminaCost(int $skillId): int
@@ -89,10 +89,10 @@ class SkillService
         string $casterType, // 'character' ou 'monster'
         string $targetType,
     ): array {
-        if (!isset($this->skills[$skillId])) {
+        if (!isset(self::$skills[$skillId])) {
             throw new \InvalidArgumentException("Skill $skillId not found");
         }
-        $skill = $this->skills[$skillId];
+        $skill = self::$skills[$skillId];
         $casterId = $caster['instanceId'];
 
         // Cooldown global apenas para jogadores
