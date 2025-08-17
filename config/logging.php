@@ -130,12 +130,12 @@ return [
         'battle_debug' => [
             'driver' => 'single',            // grava em um arquivo único
             'path' => storage_path('logs/battle_debug.log'), // arquivo específico
-            'level' => 'debug',              // nível de log
+            'level' => env('LOG_LEVEL', 'debug'),
         ],
         'deprecations' => [
             'driver' => 'daily',
             'path' => storage_path('logs/deprecations.log'),
-            'level' => 'debug',
+            'level' => env('LOG_LEVEL', 'debug'),
             'days' => 1, // mantém no máximo 14 dias de logs
         ],
 
