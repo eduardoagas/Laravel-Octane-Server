@@ -26,7 +26,7 @@ class AppServiceProvider extends ServiceProvider
                     \Illuminate\Support\Facades\Log::info("[BattleUsersTicker] Processed actions for battle $battleId");
                 }
             }
-        }, 2);
+        }, 0.5);
 
         // === Processa ações/comportamentos de monstros a cada 3 segundos ===
         Octane::tick('battle-monsters-ticker', function () use ($battleManager) {

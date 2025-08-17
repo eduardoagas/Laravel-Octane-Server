@@ -72,6 +72,12 @@ class SkillService
         return $this->skills[$skillId]['name'] ?? 'Unknown Skill';
     }
 
+    public static function getSkillStaminaCost(int $skillId): int
+    {
+
+        return $skills[$skillId]['stamina_cost'] ?? 0;
+    }
+
     public function applySkill(
         array $caster,
         ?array $target,

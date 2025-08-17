@@ -20,7 +20,8 @@ class UnityEventDispatcher
             'client-shootRequest' => \App\Listeners\WebSockets\Handlers\ShootShotHandler::class,
             'connect_to_server' => \App\Listeners\WebSockets\Handlers\ConnectToServerHandler::class,
             'battle_with_monster' => \App\Listeners\WebSockets\Handlers\BattleWithMonsterHandler::class,
-            'use_skill' => \App\Listeners\WebSockets\Handlers\UseSkillHandler::class,
+            'can_use_skill' => \App\Listeners\WebSockets\Handlers\CanUseSkillHandler::class,
+            'skill_in_execution' => \App\Listeners\WebSockets\Handlers\SkillInExecutionHandler::class,
             'subscribeConfirmed' => \App\Listeners\WebSockets\Handlers\SubscribeConfirmedHandler::class,
             // adicionar os demais aqui...
         ];

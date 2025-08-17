@@ -158,7 +158,8 @@ class BattleManager
             } catch (\Exception $e) {
                 Log::error("Error processing action for player $characterId: " . $e->getMessage(), ['exception' => $e]);
             }
-
+            // marca que terminou a execução
+            Redis::del("battle:$battleId:skill_in_execution:$characterId");
             Redis::hdel($pendingActionsKey, $characterId);
         }
 
