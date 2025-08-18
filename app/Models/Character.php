@@ -20,4 +20,14 @@ class Character extends Model
     {
         return $this->hasOne(Stats::class);
     }
+
+    public function soulGridInventory()
+    {
+        return $this->hasOne(SoulGridInventory::class);
+    }
+
+    public function soulInventory()
+    {
+        return $this->hasOne(SoulInventory::class);
+    }
 }
