@@ -42,6 +42,7 @@ class SkillService
             'stamina_cost' => 10,
             'pre_delay' => 300,
             'post_delay' => 500,
+            'level' => 1,
         ],
         3 => [
             'id' => 3,
@@ -55,7 +56,7 @@ class SkillService
         ],
         4 => [
             'id' => 4,
-            'name' => 'Raise Defense',
+            'name' => 'Wait',
             'type' => 'buff',
             'stat' => 'physical_defense_bonus',
             'bonus' => 0,
@@ -63,6 +64,19 @@ class SkillService
             'stamina_cost' => 0,
             'pre_delay' => 300,
             'post_delay' => 500,
+            'level' => 1,
+        ],
+        5 => [
+            'id' => 5,
+            'name' => 'Death',
+            'type' => 'debuff',
+            'stat' => 'death',
+            'bonus' => 0,
+            'power' => 20,
+            'stamina_cost' => 10,
+            'pre_delay' => 300,
+            'post_delay' => 500,
+            'level' => 1,
         ]
     ];
 

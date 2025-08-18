@@ -2,14 +2,82 @@
 
 namespace App\Listeners\WebSockets\Handlers;
 
+use App\Models\Soul;
+use App\Models\SoulGrid;
 use App\Models\Character;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Laravel\Reverb\Contracts\Connection;
+use App\Models\SoulGridInventory;   // novo
+use App\Models\SoulInventory;       // novo
 use App\Listeners\WebSockets\Contracts\HandlesUnityEvent;
 
 class ConnectToServerHandler implements HandlesUnityEvent
 {
+
+    private static array $defaultSkills = [
+        0 => [
+            'name' => 'Attack',
+            'type' => 'physical',
+            'power' => 0,
+            'stamina_cost' => 20,
+            'pre_delay' => 0,
+            'post_delay' => 500,
+            'level' => 1,
+        ],
+        1 => [
+            'name' => 'Fire Ball',
+            'type' => 'magical',
+            'power' => 25,
+            'stamina_cost' => 11,
+            'pre_delay' => 500,
+            'post_delay' => 1000,
+            'level' => 1,
+        ],
+        2 => [
+            'name' => 'Raise Defense',
+            'type' => 'buff',
+            'stat' => 'physical_defense_bonus',
+            'bonus' => 5,
+            'duration' => 3,
+            'stamina_cost' => 10,
+            'pre_delay' => 300,
+            'post_delay' => 500,
+            'level' => 1,
+        ],
+        3 => [
+            'name' => 'Heal',
+            'type' => 'heal',
+            'power' => 20,
+            'stamina_cost' => 8,
+            'pre_delay' => 400,
+            'post_delay' => 700,
+            'level' => 1,
+        ],
+        4 => [
+            'name' => 'Wait',
+            'type' => 'buff',
+            'stat' => 'physical_defense_bonus',
+            'bonus' => 0,
+            'duration' => 3,
+            'stamina_cost' => 0,
+            'pre_delay' => 300,
+            'post_delay' => 500,
+            'level' => 1,
+        ],
+        5 => [
+            'name' => 'Death',
+            'type' => 'debuff',
+            'stat' => 'death',
+            'bonus' => 0,
+            'power' => 20,
+            'stamina_cost' => 10,
+            'pre_delay' => 300,
+            'post_delay' => 500,
+            'level' => 1,
+        ]
+    ];
+
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
     {
         $data = $payload['data'] ?? null;
@@ -36,26 +104,8 @@ class ConnectToServerHandler implements HandlesUnityEvent
                 return;
             }
         } else {
-            Log::info("NOVO PERSONAGEM CRIADO");
-            $character = Character::where('user_id', $userId)->first();
-
-            if (!$character) {
-                $character = Character::create([
-                    'user_id' => $userId,
-                    'name'    => "Hero_{$userId}",
-                ]);
-
-                $character->stats()->create([
-                    'hp'            => 100,
-                    'level'         => 1,
-                    'strength'      => 10,
-                    'intelligence'  => 5,
-                    'defense_bonus' => 8,
-                    'mdefense_bonus' => 8,
-                    'dexterity'     => 7,
-                    'stamina'       => 12,
-                ]);
-            }
+            // Se não houver character_id, tentamos criar ou pegar o primeiro do usuário
+            $character = $this->createCharacter($userId);
         }
 
         // garante relação carregada
@@ -100,6 +150,92 @@ class ConnectToServerHandler implements HandlesUnityEvent
 
         $connection->send(json_encode($payloadToSend, JSON_UNESCAPED_UNICODE));
     }
+
+    private function createDefaultSkills(): void
+    {
+        foreach (self::$defaultSkills as $id => $skillData) {
+            \App\Models\Skill::firstOrCreate(
+                ['id' => $id],
+                $skillData
+            );
+        }
+    }
+    /**
+     * Cria um personagem com Stats, SoulInventory e SoulGridInventory
+     */
+    private function createCharacter(int $userId): Character
+    {
+        Log::info("NOVO PERSONAGEM CRIADO");
+
+        // === 1. Cria o character ===
+        $character = Character::create([
+            'user_id' => $userId,
+            'name'    => "Hero_{$userId}",
+        ]);
+
+        // === 2. Cria stats iniciais ===
+        $character->stats()->create([
+            'hp'             => 100,
+            'level'          => 1,
+            'strength'       => 10,
+            'intelligence'   => 5,
+            'defense_bonus'  => 8,
+            'mdefense_bonus' => 8,
+            'dexterity'      => 7,
+            'stamina'        => 12,
+        ]);
+
+        // === 3. Cria inventários vazios ===
+        $character->soulInventory()->create();      // inventário vazio de Souls
+        $character->soulGridInventory()->create();  // inventário vazio de SoulGrids
+
+        // === 4. Cria Skills iniciais, se não existirem ===
+        $this->createDefaultSkills();
+
+        // === 5. Cria e equipa uma réplica da SoulGrid inicial ===
+        $templateGrid = SoulGrid::where('name', 'Starter Grid')->first();
+
+        if (!$templateGrid) {
+            $templateGrid = SoulGrid::create([
+                'name'        => 'Starter Grid',
+                'slots_count' => 4,
+            ]);
+
+            // Cria stats básicos para o template
+            $templateGrid->stats()->create([
+                'hp'             => 50,
+                'strength'       => 5,
+                'intelligence'   => 3,
+                'defense_bonus'  => 2,
+                'mdefense_bonus' => 2,
+                'dexterity'      => 2,
+                'stamina'        => 5,
+            ]);
+        }
+
+        // Replica e equipa ao character
+        $equippedGrid = $templateGrid->replicateForCharacter($character);
+
+        // === 6. Cria algumas Souls iniciais e associa ao grid equipado ===
+        $initialSoulsData = [
+            ['name' => 'Soul A'],
+            ['name' => 'Soul B'],
+        ];
+
+        foreach ($initialSoulsData as $soulData) {
+            $soul = Soul::create($soulData);
+
+            // Associa Skills à Soul
+            $skillIds = [0, 1, 2, 5]; // Skills iniciais
+            $soul->skills()->sync($skillIds);
+
+            // Equipa a Soul na SoulGrid replicada
+            $equippedGrid->souls()->attach($soul->id);
+        }
+
+        return $character;
+    }
+
 
     /**
      * Normaliza um valor de "stats" que você pode ter vindo do Redis/Outro handler:

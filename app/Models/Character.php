@@ -11,6 +11,12 @@ class Character extends Model
         'name',
     ];
 
+    public function equippedSoulGrid()
+    {
+        return $this->belongsTo(SoulGrid::class, 'equipped_soul_grid_id');
+    }
+
+
     public function user()
     {
         return $this->belongsTo(User::class);

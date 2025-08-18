@@ -15,6 +15,10 @@ return new class extends Migration
             $table->id();
             $table->foreignId('user_id')->constrained()->onDelete('cascade');
             $table->string('name')->unique();
+            $table->foreignId('equipped_soul_grid_id')
+                ->nullable()
+                ->constrained('soul_grids')
+                ->nullOnDelete(); // se a grid for deletada, seta null
             $table->timestamps();
         });
     }

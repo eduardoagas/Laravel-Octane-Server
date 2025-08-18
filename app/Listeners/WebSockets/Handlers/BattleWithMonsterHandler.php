@@ -3,6 +3,7 @@
 namespace App\Listeners\WebSockets\Handlers;
 
 use App\Models\Monster;
+use App\Models\Character; // <-- novo: precisamos do model Character aqui
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use App\Services\Battle\StaminaService;
@@ -73,6 +74,54 @@ class BattleWithMonsterHandler
 
         // 6️⃣ Vincular battle_instance_id na sessão
         Redis::hset("session:$token", 'battle_instance_id', $battleId);
+
+        /*
+         * === NOVO: Pré-carrega a SoulGrid equipada (com Souls e Skills) para uso rápido durante a batalha ===
+         *
+         * Racional:
+         * - Para desempenho em combate, precisamos de acesso rápido ao grid equipado,
+         *   as souls dentro dele e as skills de cada soul.
+         * - Em vez de manter tudo persistido na sessão desde a conexão,
+         *   carregamos essa estrutura no Redis apenas quando a batalha começa,
+         *   sob a key específica do battle. Durante a batalha, atualizações
+         *   podem escrever apenas nessa key, reduzindo I/O ao Postgres.
+         */
+        try {
+            // Busca o Character completo com a relação equipada -> souls -> skills
+            $characterModel = Character::with(['equippedSoulGrid.souls.skills'])->find($characterId);
+
+            if ($characterModel && $characterModel->equippedSoulGrid) {
+                $equippedGrid = $characterModel->equippedSoulGrid;
+
+                // Normaliza para array (inclui souls.skills via eager load)
+                $equippedGridArray = $equippedGrid->toArray();
+
+                // Salva a estrutura completa do grid no Redis para esta batalha/character
+                // Key: battle:$battleId:character:{$characterId}:equipped_soul_grid
+                Redis::set("battle:$battleId:character:{$characterId}:equipped_soul_grid", json_encode($equippedGridArray, JSON_UNESCAPED_UNICODE));
+
+                // Log para debug/performance
+                Log::info("Equipped SoulGrid preloaded into Redis for battle", [
+                    'battle' => $battleId,
+                    'character_id' => $characterId,
+                    'soul_grid_id' => $equippedGrid->id,
+                ]);
+            } else {
+                // Sem grid equipada: registra no log (não é erro crítico)
+                Log::info("No equipped SoulGrid found for character when starting battle", [
+                    'character_id' => $characterId,
+                    'battle' => $battleId,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // Erro no pré-carregamento: loga e continua (não bloqueia a criação da batalha)
+            Log::error('Failed to preload equipped SoulGrid for battle', [
+                'character_id' => $characterId,
+                'battle' => $battleId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+        /* === FIM NOVO === */
 
         // 7️⃣ Criar monstro com instanceId incremental
         $monstersRaw = Redis::hgetall("battle:$battleId:monsters");

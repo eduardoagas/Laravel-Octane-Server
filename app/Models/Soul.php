@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class Soul extends Model
 {
-    protected $casts = ['skills' => 'array', 'slots' => 'array'];
+    protected $casts = ['slots_count'];
 
     public function activationBonuses()
     {
@@ -20,8 +20,16 @@ class Soul extends Model
         return $this->belongsTo(SoulInventory::class);
     }
 
-    public function soulGrid()
+    public function skills()
     {
-        return $this->belongsTo(SoulGrid::class);
+        return $this->belongsToMany(Skill::class, 'soul_skill')
+            ->withTimestamps();
+    }
+
+
+    public function soulGrids()
+    {
+        return $this->belongsToMany(SoulGrid::class, 'soul_grid_soul')
+            ->withTimestamps();
     }
 }

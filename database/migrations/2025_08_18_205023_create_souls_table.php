@@ -15,12 +15,11 @@ return new class extends Migration
             $table->id();
             $table->string('name');
             $table->unsignedBigInteger('monster_source_id')->nullable(); // FK opcional se você tiver tabela monsters
-            $table->json('skills')->nullable(); // skills pré-definidas
-            $table->json('slots')->nullable();
+            $table->integer('slots_count')->default(4);
+            $table->foreignId('character_id')->nullable()->constrained()->nullOnDelete();
 
             // Relações
             $table->foreignId('soul_inventory_id')->nullable()->constrained()->cascadeOnDelete();
-            $table->foreignId('soul_grid_id')->nullable()->constrained()->cascadeOnDelete();
             $table->timestamps();
         });
     }

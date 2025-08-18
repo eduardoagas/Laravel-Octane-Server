@@ -11,14 +11,10 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('soul_grids', function (Blueprint $table) {
+        Schema::create('soul_grid_soul', function (Blueprint $table) {
             $table->id();
-            $table->string('name');
-            $table->unsignedTinyInteger('slots_count')->default(4);
-            $table->foreignId('soul_grid_inventory_id')
-                ->nullable()              // permite que a grid não esteja no inventory
-                ->constrained()
-                ->nullOnDelete();
+            $table->foreignId('soul_grid_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('soul_id')->constrained()->cascadeOnDelete();
             $table->timestamps();
         });
     }
@@ -28,6 +24,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('soul_grids');
+        //
     }
 };

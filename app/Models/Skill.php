@@ -10,18 +10,18 @@ class Skill extends Model
         'name',
         'type',
         'power',
-        'stat',
-        'bonus',
-        'duration',
         'stamina_cost',
         'pre_delay',
         'post_delay',
-        'level'
+        'level',
+        'stat',
+        'bonus',
+        'duration'
     ];
 
-    // Caso futuramente queira relacionar com Souls:
-    // public function souls()
-    // {
-    //     return $this->belongsToMany(Soul::class, 'soul_skills')->withTimestamps();
-    // }
+    public function souls()
+    {
+        return $this->belongsToMany(Soul::class, 'soul_skill')
+            ->withTimestamps();
+    }
 }
