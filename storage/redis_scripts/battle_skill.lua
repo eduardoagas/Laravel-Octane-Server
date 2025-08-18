@@ -1,11 +1,9 @@
--- KEYS[1] = battle:<id>:characters_data
--- KEYS[2] = battle:<id>:monsters
--- ARGV[1] = skillType ("physical", "magical", "heal", "buff", "debuff")
--- ARGV[2] = casterId
--- ARGV[3] = targetId
--- ARGV[4] = skillPower / bonus (opcional, default 0)
--- ARGV[5] = stat (apenas para buff/debuff, opcional, default "")
--- ARGV[6] = duration (apenas para buff/debuff, opcional, default 0)
+--[[
+Lua script para aplicar skills em batalha:
+- Mantém cálculo de dano físico/mágico com multiplicadores weak/medium/strong
+- Mantém heal, buff e debuff
+- NOVO: agora toda a lógica de cálculo está no Lua
+--]]
 
 local skillType = ARGV[1] or ""
 local casterId = ARGV[2] or ""
@@ -13,19 +11,21 @@ local targetId = ARGV[3] or ""
 local power = tonumber(ARGV[4]) or 0
 local stat = ARGV[5] or ""
 local duration = tonumber(ARGV[6]) or 0
+local casterStats = cjson.decode(ARGV[7] or "{}")
+local targetStats = cjson.decode(ARGV[8] or "{}")
+local level = tonumber(ARGV[9]) or 0
+
+local keys = {KEYS[1], KEYS[2]}
 
 -- Função para buscar target em qualquer hash
 local function hget_any(keys, field)
-    for i=1,#keys do
+    for i = 1, #keys do
         local raw = redis.call('HGET', keys[i], field)
-        if raw then
-            return raw, keys[i]
-        end
+        if raw then return raw, keys[i] end
     end
     return nil, nil
 end
 
-local keys = {KEYS[1], KEYS[2]}
 local raw, targetKey = hget_any(keys, targetId)
 if not raw then return cjson.encode({ error = "Target not found" }) end
 
@@ -43,33 +43,48 @@ local function nano_random()
     return (micros % 1000000) / 1000000.0
 end
 
--- Função utilitária para ler stats
+-- Função utilitária para ler stats (novos ou antigos nomes)
 local function read_stat(tbl, ...)
-    for i=1,select('#', ...) do
+    for i = 1, select('#', ...) do
         local k = select(i, ...)
-        if tbl[k] ~= nil then
-            return tonumber(tbl[k])
-        end
+        if tbl[k] ~= nil then return tonumber(tbl[k]) end
     end
-    return nil
+    return 0
 end
 
--- Calcula defesa
+-- Calcula defesa baseada no tipo de skill
 local function get_defense(stats_table, skillType)
-    if skillType == "physical" then
-        return tonumber(stats_table['pdefense'] or stats_table['defense'] or 0)
-    else
-        return tonumber(stats_table['mdef'] or stats_table['mdefense'] or 0)
-    end
+    if skillType == "physical" then return read_stat(stats_table, 'pdefense') end
+    return read_stat(stats_table, 'mdefense')
 end
 
--- DANO FÍSICO / MÁGICO
+-- Multiplicadores de força (NOVO: mantém mecânica antiga do PHP)
+local strength_multipliers = {
+    weak = 0.9,
+    medium = 3.0,
+    strong = 5.0
+}
+
+-- Determina categoria de força baseada no nível ou power (NOVO)
+local function determine_strength(level)
+    if level == 1 then return "weak" end       -- ajuste leve, pode personalizar
+    if power == 2 then return "medium" end
+    if power == 3 then return "strong" end
+    return "weak"
+end
+
+-- ====================== DANO FÍSICO / MÁGICO ======================
 if skillType == "physical" or skillType == "magical" then
+    local attack = read_stat(casterStats, skillType == "physical" and "strength" or "intelligence")
     local defense = get_defense(stats, skillType)
-    local currentHp = tonumber(stats['current_hp'] or stats['hp'] or 0)
-    local damage = math.max(0, math.floor(power) - math.floor(defense))
+    local currentHp = read_stat(stats, 'current_hp')
+
+    -- NOVO: aplica multiplicador de força
+    local strength = determine_strength(level)
+    local baseDamage = 10 + 1 * (power + attack) -- mesmo cálculo PHP anterior
+    local damage = math.max(0, math.floor(baseDamage * (strength_multipliers[strength] or 1)))
     local newHp = math.max(0, currentHp - damage)
-    stats['current_hp'] = math.floor(newHp)
+    stats['current_hp'] = newHp
     result['damage_dealt'] = damage
 
     if newHp <= 0 and not statuses['death'] then
@@ -79,16 +94,17 @@ if skillType == "physical" or skillType == "magical" then
         statuses['death'] = nil
     end
 
--- HEAL
+-- ====================== HEAL ======================
 elseif skillType == "heal" then
-    local maxHp = tonumber(stats['hp'] or 100)
-    local currentHp = tonumber(stats['current_hp'] or 0)
-    local newHp = math.min(maxHp, currentHp + math.floor(power))
-    stats['current_hp'] = math.floor(newHp)
-    result['healed_amount'] = math.floor(newHp - currentHp)
+    local maxHp = read_stat(stats, 'hp') or 100
+    local currentHp = read_stat(stats, 'current_hp')
+    local healPower = power + read_stat(casterStats, 'intelligence')
+    local newHp = math.min(maxHp, currentHp + healPower)
+    stats['current_hp'] = newHp
+    result['healed_amount'] = newHp - currentHp
     if newHp > 0 then statuses['death'] = nil end
 
--- BUFF
+-- ====================== BUFF ======================
 elseif skillType == "buff" then
     local buff = {
         caster_id = casterId,
@@ -100,20 +116,17 @@ elseif skillType == "buff" then
     redis.call('HSET', targetKey .. ":buffs", casterId, cjson.encode(buff))
     result['buff_applied'] = buff
 
--- DEBUFF
+-- ====================== DEBUFF ======================
 elseif skillType == "debuff" then
-    local function findCaster(cId)
-        local raw, _ = hget_any(keys, cId)
-        if not raw then return nil end
-        return cjson.decode(raw)
-    end
-    local casterEntity = findCaster(casterId)
-    local casterStats = casterEntity and casterEntity['stats'] or {}
+    local caster_luk = math.max(1, read_stat(casterStats, 'luck'))
+    local target_vit = math.max(1, read_stat(stats, 'vitality', 'vit'))
 
-    local caster_luck = tonumber(read_stat(casterStats, 'luck')) or 0
-    local target_vit = tonumber(read_stat(stats, 'vitality', 'vit')) or 0
-    local base_chance = (caster_luck + target_vit) == 0 and 0.5 or caster_luck / (caster_luck + target_vit)
-    local chance = math.min(0.99, math.max(0.01, base_chance + (power / 100.0)))
+    -- Determina força do debuff (mesma lógica antiga)
+    local debuff_strength = power < 100 and "weak" or power < 300 and "medium" or "strong"
+    local base_chances = { weak = 0.10, medium = 0.20, strong = 0.50 }
+    local min_chances = { weak = 0.00, medium = 0.01, strong = 0.10 }
+    local chance = base_chances[debuff_strength] * (caster_luk / (caster_luk + target_vit))
+    chance = math.max(min_chances[debuff_strength], math.min(0.99, chance))
 
     if nano_random() < chance then
         local debuff = {
@@ -125,34 +138,30 @@ elseif skillType == "debuff" then
         }
         local field = tostring(targetId) .. ":" .. debuff['stat'] .. ":" .. tostring(casterId)
         redis.call('HSET', targetKey .. ":debuffs", field, cjson.encode(debuff))
+        statuses[debuff['stat']] = debuff
 
-        statuses[debuff['stat']] = {
-            caster_id = casterId,
-            power = debuff['power'],
-            duration = debuff['duration'],
-            applied_at = debuff['applied_at']
-        }
-
-        -- efeito instantâneo se for death
-        if debuff['stat'] == 'death' and (stats['current_hp'] or 0) > 0 then
+        if debuff['stat'] == 'death' and read_stat(stats, 'current_hp') > 0 then
             stats['current_hp'] = 0
             someoneDied = true
         end
+
         result['debuff_applied'] = debuff
     else
         result['debuff_failed'] = true
         result['debuff_chance'] = chance
         result['debuff_roll'] = nano_random()
     end
+
 else
     return cjson.encode({ error = "Unknown skill type: " .. tostring(skillType) })
 end
 
--- Salva stats de volta no entity
+-- ====================== SALVA STATS NO REDIS ======================
 stats['statuses'] = statuses
 entity['stats'] = stats
 redis.call('HSET', targetKey, targetId, cjson.encode(entity))
 
 result['target_died'] = someoneDied
-result['current_hp'] = math.floor(stats['current_hp'] or 0)
+result['current_hp'] = read_stat(stats, 'current_hp')
+
 return cjson.encode(result)

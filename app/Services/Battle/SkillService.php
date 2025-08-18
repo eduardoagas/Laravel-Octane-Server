@@ -26,8 +26,8 @@ class SkillService
             'id' => 1,
             'name' => 'Fire Ball',
             'type' => 'magical',
-            'power' => 25, //15-25
-            'stamina_cost' => 11, //5-12 
+            'power' => 25,
+            'stamina_cost' => 11,
             'pre_delay' => 500,
             'post_delay' => 1000,
             'level' => 1,
@@ -47,7 +47,7 @@ class SkillService
             'id' => 3,
             'name' => 'Heal',
             'type' => 'heal',
-            'power' => 20, // quantidade de HP curada
+            'power' => 20,
             'stamina_cost' => 8,
             'pre_delay' => 400,
             'post_delay' => 700,
@@ -70,6 +70,7 @@ class SkillService
     {
         $this->staminaService = new StaminaService();
     }
+
     public function getSkillName(int $skillId): string
     {
         return self::$skills[$skillId]['name'] ?? 'Unknown Skill';
@@ -77,8 +78,7 @@ class SkillService
 
     public static function getSkillStaminaCost(int $skillId): int
     {
-        $cost = self::$skills[$skillId]['stamina_cost'] ?? 0;
-        return $cost;
+        return self::$skills[$skillId]['stamina_cost'] ?? 0;
     }
 
     public function applySkill(
@@ -86,7 +86,7 @@ class SkillService
         ?array $target,
         string $battleId,
         int $skillId,
-        string $casterType, // 'character' ou 'monster'
+        string $casterType,
         string $targetType,
     ): array {
         if (!isset(self::$skills[$skillId])) {
@@ -95,7 +95,6 @@ class SkillService
         $skill = self::$skills[$skillId];
         $casterId = $caster['instanceId'];
 
-        // NOVO: garante que atributos do caster venham de stats
         $casterStats = $caster['stats'] ?? [];
         if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
 
@@ -104,85 +103,44 @@ class SkillService
             $this->checkCooldown($battleId, $casterId, $skill['post_delay']);
         }
 
-        // Verifica stamina (leitura inicial)
+        // Verifica e consome stamina (agora atômico via Lua no StaminaService)
         $currentStamina = $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType);
         if ($currentStamina < $skill['stamina_cost']) {
-            // Se já estava insuficiente, corta aqui (mantém comportamento anterior).
             throw new InsufficientStaminaException("Stamina insuficiente ({$currentStamina} / {$skill['stamina_cost']})");
         }
-
-        // Consome stamina (NOVO: operação atômica via Lua no StaminaService)
-        // NOTE: consumeStamina agora retorna a stamina **após** o consumo (current_after) ou null em caso de falha/insuficiente
         $currentAfterConsumption = $this->staminaService->consumeStamina($battleId, $casterId, $skill['stamina_cost'], $casterType);
-
-        // NOVO: trata condição de corrida (race) — se outro consumidor gastou antes, o Lua pode negar o consumo e retornar null
         if ($currentAfterConsumption === null) {
-            // Lança exceção igual ao caso de insuficiência: mantém código chamador limpo
             throw new InsufficientStaminaException("Stamina insuficiente (race condition detectada ao tentar consumir)");
         }
-
-        // Agora $currentAfterConsumption contém a stamina **após** o gasto aplicado
-        // Não usamos/alteramos initial_stamina aqui (Opção A): o StaminaService atualiza used_stamina_total internamente.
 
         if (!$target) {
             throw new \InvalidArgumentException("Target is required for skill {$skill['name']}");
         }
 
         $targetKey = ($targetType ?? 'character') === 'monster' ? 'monsters' : 'characters_data';
-        $redisKey = "battle:$battleId:$targetKey";
-
         $luaPath = storage_path("redis_scripts/battle_skill.lua");
         $luaScript = file_get_contents($luaPath);
-
-        //$resultPayload = [];
-
-        if ($skill['type'] === 'physical' || $skill['type'] === 'magical') {
-            if (!$target) {
-                throw new \InvalidArgumentException("Target is required for damage skills");
-            }
-
-            $attackAttribute = $skill['type'] === 'physical' ? 'strength' : 'intelligence';
-            $baseAttack = $casterStats[$attackAttribute] ?? 0;
-            $damage = $skill['power'] + $baseAttack;
-            $strength = match ($skill['level']) {
-                1 => 'weak',
-                2 => 'medium',
-                3 => 'strong',
-                default => 'medium',
-            };
-            $power = $this->calculateDamage($damage, $strength);
-        } elseif ($skill['type'] === 'buff') {
-            if (!$target) {
-                throw new \InvalidArgumentException("Target is required for buff skills");
-            }
-            $power = $skill['bonus'];
-        } elseif ($skill['type'] === 'heal') {
-            if (!$target) {
-                throw new \InvalidArgumentException("Target is required for heal skills");
-            }
-            $power = $skill['power'] + $casterStats['intelligence'];
-        }
-
-        $resultJson = Redis::eval(
-            $luaScript,
-            1,
-            $redisKey,
+        // NOVO: envia todos os stats e atributos para Lua, que fará o cálculo de dano/heal/buff/debuff
+        $params = [
             $skill['type'],
             $casterId,
             $target['instanceId'],
-            $power,
+            $skill['power'] ?? 0,
             $skill['stat'] ?? '',
-            $skill['duration'] ?? 0
-        );
+            $skill['duration'] ?? 0,
+            json_encode($casterStats),
+            json_encode($target['stats'] ?? []),
+            $skill['level'] ?? 1,
+        ];
 
+        $resultJson = Redis::eval($luaScript, 2, "battle:$battleId:characters_data", "battle:$battleId:monsters", ...$params);
         $result = json_decode($resultJson, true);
 
         if (isset($result['error'])) {
             throw new \RuntimeException($result['error']);
         }
 
-        // NOVO: opcional — ler used_stamina_total atualizado do Redis para incluir no payload
-        // Isso permite que o cliente sincronize usando start_time + initial_stamina + used_stamina_total
+        // NOVO: retorna payload final com current_stamina atualizado
         $staminaField = "{$casterType}:{$casterId}";
         $staminaKey = "battle:$battleId:stamina_data";
         $staminaRaw = Redis::hget($staminaKey, $staminaField);
@@ -192,20 +150,13 @@ class SkillService
             $usedStaminaTotal = isset($stParsed['used_stamina_total']) ? (float)$stParsed['used_stamina_total'] : null;
         }
 
-        // Retorna payload de resultado da skill
-        // NOTA: "initial_stamina" era retornado antes; isso mudaria a semântica. Para compatibilidade mínima,
-        // mantemos 'initial_stamina' mas agora ele representa o baseline (não atualizado pelo consumo).
-        // NOVO: adicionamos 'current_stamina_after' (stamina após a aplicação do custo)
-        // NOVO: adicionamos 'used_stamina_total' (útil para o cliente sincronizar caso queira)
         return [
             'battle_id' => $battleId,
             'caster_id' => $casterId,
             'skill_id' => $skillId,
-            // NOVO/ATUALIZADO: current_stamina agora representa o valor **após** o consumo
             'current_stamina' => $currentAfterConsumption,
-            // MANTIDO (mas atenção: semântica mudou — é o baseline inicial, não o snapshot após consumo)
-            'initial_stamina' => null, // MANTIDO POR COMPATIBILIDADE (antigo uso). Coloque null para evitar confusão.
-            'used_stamina_total' => $usedStaminaTotal, // NOVO: retorna o usado acumulado
+            'initial_stamina' => null,
+            'used_stamina_total' => $usedStaminaTotal,
             'pre_delay' => $skill['pre_delay'],
             'post_delay' => $skill['post_delay'],
             'someoneDied' => $result['target_died'] ?? false,
@@ -213,6 +164,7 @@ class SkillService
             'damage_dealt' => $result['damage_dealt'] ?? null,
             'healed_amount' => $result['healed_amount'] ?? null,
             'buff_applied' => $result['buff_applied'] ?? null,
+            'debuff_applied' => $result['debuff_applied'] ?? null,
         ];
     }
 
@@ -225,22 +177,5 @@ class SkillService
             throw new SkillCooldownException("Skill em cooldown até " . date('H:i:s', (int)$readyAt));
         }
         Redis::set($redisKey, $now + (int)($postDelay / 1000));
-    }
-
-
-    private function calculateDamage(float $power, string $strength = 'weak'): float
-    {
-        $base = 10 + 1 * $power;
-
-        // Multiplicadores sugeridos
-        $multipliers = [
-            'weak' => 0.9,
-            'medium' => 3.0,
-            'strong' => 5.0,
-        ];
-
-        $mult = $multipliers[$strength] ?? 0.9;
-
-        return $base * $mult;
     }
 }
