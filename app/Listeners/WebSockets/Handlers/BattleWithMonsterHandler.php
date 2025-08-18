@@ -21,7 +21,7 @@ class BattleWithMonsterHandler
     {
         // 1️⃣ Busca os dados da sessão pelo token
         $sessionData = Redis::hgetall("session:$token");
-        $characterId = $sessionData['character_id'] ?? null;
+        $characterId = isset($sessionData['character_id']) ? (int)$sessionData['character_id'] : null;
 
         if (!$characterId) {
             $connection->send(json_encode(['error' => 'Character ID not found in session']));
@@ -29,18 +29,29 @@ class BattleWithMonsterHandler
             return;
         }
 
-        // 2️⃣ Busca os dados do personagem
-        $characterJson = Redis::hgetall("character_session:$characterId");
-        if (!$characterJson || empty($characterJson)) {
+        // 2️⃣ Busca os dados do personagem (vêm como strings do Redis)
+        $characterRaw = Redis::hgetall("character_session:$characterId");
+        if (empty($characterRaw)) {
             $connection->send(json_encode(['error' => 'Character data not found']));
             Log::warning("Character data missing for character_id $characterId");
             return;
         }
 
-        // 2.1️⃣ Decodifica os stats e adiciona current_hp dentro de stats
-        $stats = isset($characterJson['stats']) ? json_decode($characterJson['stats'], true) : [];
-        $stats['current_hp'] = $stats['hp'] ?? 0; // 🔹 Novo: current_hp incluído nos stats
-        $characterJson['stats'] = json_encode($stats); // 🔹 Atualiza o JSON para Redis
+        // normaliza stats (string JSON -> array, "Array" -> [], array -> array)
+        $stats = $this->normalizeStatsValue($characterRaw['stats'] ?? null);
+
+        // garante current_hp
+        $stats['current_hp'] = $stats['current_hp'] ?? ($stats['hp'] ?? 0);
+
+        // monta payload limpo do personagem (array/obj) — usado para enviar e para persistir na estrutura da battle
+        $characterPayload = [
+            'id'         => $characterId,
+            'user_id'    => isset($characterRaw['user_id']) ? (int)$characterRaw['user_id'] : null,
+            'name'       => $characterRaw['name'] ?? null,
+            'created_at' => $characterRaw['created_at'] ?? null,
+            'updated_at' => $characterRaw['updated_at'] ?? null,
+            'stats'      => $stats,
+        ];
 
         // 3️⃣ Criar ID único para a batalha
         $battleId = uniqid('battle_', true);
@@ -48,11 +59,13 @@ class BattleWithMonsterHandler
         // 4️⃣ Definir instanceId incremental para o personagem
         $currentPlayers = Redis::hlen("battle:$battleId:characters_data");
         $playerInstanceId = $currentPlayers + 1;
-        $characterJson['instanceId'] = (string)$playerInstanceId;
+        $characterPayload['instanceId'] = (string)$playerInstanceId;
 
         // 5️⃣ Registrar personagem na batalha
-        Redis::sadd("battle:$battleId:characters", $characterId);
-        Redis::hset("battle:$battleId:characters_data", $characterId, json_encode($characterJson));
+        Redis::sadd("battle:$battleId:characters", (string)$characterId);
+
+        // grava um JSON da estrutura do personagem em characters_data
+        Redis::hset("battle:$battleId:characters_data", (string)$characterId, json_encode($characterPayload, JSON_UNESCAPED_UNICODE));
 
         // 6️⃣ Vincular battle_instance_id na sessão
         Redis::hset("session:$token", 'battle_instance_id', $battleId);
@@ -68,11 +81,11 @@ class BattleWithMonsterHandler
         }
         $monsterInstanceId = $maxMonsterInstance + 1;
 
-        // 7.1️⃣ Busca ou cria o monstro
-        $monster = Monster::where('monster_id', 1)->with('stats')->first();
+        // 7.1️⃣ Busca ou cria o monstro (model + stats relation)
+        $monster = Monster::where('id', 1)->with('stats')->first();
         if (!$monster) {
             $monster = Monster::create([
-                'monster_id' => 1,
+                'id' => 1,
                 'name'       => 'Goblin',
                 'type'       => 'goblin',
             ]);
@@ -86,60 +99,116 @@ class BattleWithMonsterHandler
                 'dexterity'     => 1,
                 'stamina'       => 25,
             ]);
-
             $monster->load('stats');
         }
 
-        // 7.2️⃣ Monta payload do monstro com current_hp dentro de stats
-        $monsterStats = $monster->stats->toArray();
-        $monsterStats['current_hp'] = $monsterStats['hp'] ?? 0; // 🔹 Novo: current_hp incluído
+        // 7.2️⃣ Monta payload do monstro com current_hp dentro de stats (ARRAY, não string)
+        $monsterStats = $monster->stats ? $monster->stats->toArray() : [];
+        $monsterStats['current_hp'] = $monsterStats['current_hp'] ?? ($monsterStats['hp'] ?? 0);
+
         $monsterPayload = [
-            'monster_id' => $monster->monster_id,
+            'monster_id' => $monster->id,
             'name'       => $monster->name,
             'type'       => $monster->type,
             'instanceId' => (string)$monsterInstanceId,
-            'stats'      => json_encode($monsterStats),
+            'stats'      => $monsterStats, // mantém como array aqui
         ];
 
-        // 7.3️⃣ Salva monstro no Redis
-        Redis::hset("battle:$battleId:monsters", (string)$monsterInstanceId, json_encode($monsterPayload));
+        // 7.3️⃣ Salva monstro no Redis como JSON string (ok), mas quando enviar -> decodificar
+        Redis::hset("battle:$battleId:monsters", (string)$monsterInstanceId, json_encode($monsterPayload, JSON_UNESCAPED_UNICODE));
 
         $now = now()->timestamp;
 
-        // 8️⃣ Inicializar stamina do monstro
+        // 8️⃣ Inicializar stamina do monstro (salva JSON)
         $monsterStaminaData = $this->staminaService->initializeStamina(
             $now,
             (int)($monsterStats['stamina'] ?? 0),
             (int)($monsterStats['dexterity'] ?? 0)
         );
-        Redis::hset("battle:$battleId:stamina_data", "monster:{$monsterInstanceId}", json_encode($monsterStaminaData));
+        Redis::hset("battle:$battleId:stamina_data", "monster:{$monsterInstanceId}", json_encode($monsterStaminaData, JSON_UNESCAPED_UNICODE));
 
-        // 9️⃣ Inicializar stamina do personagem
+        // 9️⃣ Inicializar stamina do personagem (salva JSON)
         $characterStaminaData = $this->staminaService->initializeStamina(
             $now,
             (int)($stats['stamina'] ?? 0),
             (int)($stats['dexterity'] ?? 0)
         );
-        Redis::hset("battle:$battleId:stamina_data", "character:$characterId", json_encode($characterStaminaData));
+        Redis::hset("battle:$battleId:stamina_data", "character:{$characterId}", json_encode($characterStaminaData, JSON_UNESCAPED_UNICODE));
 
-        // 🔟 Enviar update para o jogador
-        $connection->send(json_encode([
+        // 🔟 Enviar update para o jogador — envia ARRAYS/OBJETOS, não strings JSON
+        $outPayload = [
             'event'   => 'updateYourself',
             'channel' => "character.{$characterId}",
             'data'    => [
                 'players' => [
                     [
                         'instanceId'  => (string)$playerInstanceId,
-                        'currentHp'   => (int)($stats['hp'] ?? 0),
+                        'currentHp'   => (int)($stats['current_hp'] ?? ($stats['hp'] ?? 0)),
                         'staminaData' => $characterStaminaData,
+                        'stats'       => $stats, // envia stats como objeto/array
+                    ]
+                ],
+                'monsters' => [
+                    [
+                        'instanceId' => (string)$monsterInstanceId,
+                        'monster_id' => $monster->id,
+                        'name'       => $monster->name,
+                        'stats'      => $monsterStats, // envia stat do monstro como array/obj
                     ]
                 ],
                 'general' => ['globalMessages' => ["Battle's started!"]],
             ],
-        ]));
+        ];
 
-        // 11️⃣ Adiciona batalha ativa
+        // Debug: confirma que stats são arrays no payload (não strings)
+        Log::debug('BattleWithMonster OUT', $outPayload);
+
+        $connection->send(json_encode($outPayload, JSON_UNESCAPED_UNICODE));
+
+        // 11️⃣ Adiciona batalha ativa e log
         Redis::sadd('battles:active', $battleId);
         Log::info("Battle $battleId created and sent to character.$characterId for user $userId.");
+    }
+
+    /**
+     * Normaliza um valor de "stats" que veio do Redis ou de outro lugar:
+     * - array -> retorna array
+     * - object -> cast para array
+     * - string JSON -> json_decode -> array
+     * - literal "Array" -> []
+     */
+    protected function normalizeStatsValue(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_object($value)) {
+            return (array)$value;
+        }
+
+        if (!is_string($value) || $value === '') {
+            return [];
+        }
+
+        // Se já for JSON string normal: '{"hp":100,...}'
+        $decoded = json_decode($value, true);
+        if (is_array($decoded)) {
+            return $decoded;
+        }
+
+        // Caso alguém tenha gravado literalmente "Array" no Redis
+        if ($value === 'Array') {
+            return [];
+        }
+
+        // Se for double-encoded (ex: "\"{...}\"") tenta trim extra quotes e decode
+        $trimmed = trim($value, "\"'");
+        $decoded2 = json_decode($trimmed, true);
+        if (is_array($decoded2)) {
+            return $decoded2;
+        }
+
+        return [];
     }
 }

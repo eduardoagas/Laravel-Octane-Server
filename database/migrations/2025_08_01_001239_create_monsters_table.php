@@ -10,7 +10,8 @@ return new class extends Migration
     {
         Schema::create('monsters', function (Blueprint $table) {
             $table->id();
-            $table->string('name');
+            $table->string('name')->default('unknown');;
+            $table->string('type')->default('unknown');;
             $table->timestamps();
         });
     }

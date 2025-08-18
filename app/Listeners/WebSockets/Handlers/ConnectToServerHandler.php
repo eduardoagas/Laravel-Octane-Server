@@ -12,10 +12,8 @@ class ConnectToServerHandler implements HandlesUnityEvent
 {
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
     {
-        // —————————————
-        // 1) Extrai e valida data
         $data = $payload['data'] ?? null;
-        if (! is_array($data)) {
+        if (!is_array($data)) {
             $connection->send(json_encode([
                 'event'   => 'character_invalid',
                 'message' => 'Missing data payload.',
@@ -25,29 +23,23 @@ class ConnectToServerHandler implements HandlesUnityEvent
 
         $characterId = $data['character_id'] ?? null;
 
-        // —————————————
-        // 2) Se enviou character_id, valida se pertence ao usuário
         if ($characterId) {
             $character = Character::where('id', $characterId)
                 ->where('user_id', $userId)
                 ->first();
 
-            if (! $character) {
+            if (!$character) {
                 $connection->send(json_encode([
                     'event'   => 'character_invalid',
                     'message' => 'Character not found or does not belong to user.',
                 ]));
                 return;
             }
-        }
-        // —————————————
-        // 3) Se não enviou, cria ou recupera o primeiro
-        else {
+        } else {
             Log::info("NOVO PERSONAGEM CRIADO");
-
             $character = Character::where('user_id', $userId)->first();
 
-            if (! $character) {
+            if (!$character) {
                 $character = Character::create([
                     'user_id' => $userId,
                     'name'    => "Hero_{$userId}",
@@ -66,31 +58,96 @@ class ConnectToServerHandler implements HandlesUnityEvent
             }
         }
 
-        // —————————————
-        // 4) Persiste no Redis
-        $characterData = $character->toArray();
+        // garante relação carregada
+        $character->load('stats');
 
-        // Salva apenas o character_id na sessão
-        Redis::hset("session:$token", [
-            'character_id' => $character->id
+        // ===== preparar stats =====
+        $statsArray = $character->stats ? $character->stats->toArray() : [];
+        $statsJson  = json_encode($statsArray, JSON_UNESCAPED_UNICODE);
+
+        if ($statsJson === false) {
+            Log::error('Falha ao serializar stats', ['character_id' => $character->id, 'err' => json_last_error_msg()]);
+            $statsJson  = json_encode([]);
+            $statsArray = [];
+        }
+
+        // ===== salvar no Redis (stats como string JSON) =====
+        Redis::hset("session:$token", 'character_id', (string) $character->id);
+        Redis::hmset("character_session:{$character->id}", [
+            'id'         => (string) $character->id,
+            'user_id'    => (string) $userId,
+            'name'       => (string) $character->name,
+            'created_at' => $character->created_at->toDateTimeString(),
+            'updated_at' => $character->updated_at->toDateTimeString(),
+            'stats'      => $statsJson, // importantíssimo: JSON string no Redis
         ]);
 
-        // Salva todos os dados do character + stats em uma única chave
-        Redis::hset("character_session:{$character->id}", [
-            'id'         => $characterData['id'],
-            'user_id'    => $userId,
-            'name'       => $characterData['name'],
-            'created_at' => $characterData['created_at'],
-            'updated_at' => $characterData['updated_at'],
-            'stats'      => json_encode($characterData['stats']), // stats como JSON
-        ]);
-        // —————————————
-        // 5) Envia instrução para Unity assinar o canal do personagem
-        $connection->send(json_encode([
+        // ===== montar payload para Unity =====
+        $payloadToSend = [
             'event' => 'subscribeMe',
-            'data' => [
-                'channel' => "character.{$character->id}"
-            ]
-        ]));
+            'data'  => [
+                'channel' => "character.{$character->id}",
+                'character' => [
+                    'id'    => $character->id,
+                    'name'  => $character->name,
+                    'stats' => $statsArray, // ENSINA: enviar como array/objeto aqui
+                ],
+            ],
+        ];
+
+        // debug útil: loga o payload *antes* do json_encode final para confirmar tipo
+        Log::debug('WS OUT (subscribeMe)', $payloadToSend);
+
+        $connection->send(json_encode($payloadToSend, JSON_UNESCAPED_UNICODE));
+    }
+
+    /**
+     * Normaliza um valor de "stats" que você pode ter vindo do Redis/Outro handler:
+     * - se for string -> tenta json_decode
+     * - se for "Array" (literal) -> retorna []
+     * - se for array/object -> retorna array
+     */
+    protected function normalizeStatsValue(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_object($value)) {
+            return (array) $value;
+        }
+
+        if (is_string($value)) {
+            // strings "Array" aparecem quando alguém gravou diretamente um array no hset
+            if ($value === 'Array') {
+                return [];
+            }
+            $decoded = json_decode($value, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+            // fallback
+            return [];
+        }
+
+        return [];
+    }
+
+    /**
+     * Exemplo de leitura do Redis usando normalização (use quando montar payloads a partir do Redis)
+     */
+    protected function buildCharacterPayloadFromRedis(int $characterId): array
+    {
+        $hash = Redis::hgetall("character_session:{$characterId}");
+        if (empty($hash)) {
+            return [];
+        }
+        $stats = $this->normalizeStatsValue($hash['stats'] ?? null);
+
+        return [
+            'id'   => isset($hash['id']) ? (int)$hash['id'] : $characterId,
+            'name' => $hash['name'] ?? null,
+            'stats' => $stats,
+        ];
     }
 }

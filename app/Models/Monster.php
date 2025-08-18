@@ -8,6 +8,7 @@ class Monster extends Model
 {
     protected $fillable = [
         'name',
+        'type',
         // outros campos do monstro...
     ];
 

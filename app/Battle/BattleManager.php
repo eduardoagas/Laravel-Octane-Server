@@ -195,7 +195,7 @@ class BattleManager
 
         foreach ($monsters as $monsterKey => &$monster) {
             $monsterCurrentStamina = StaminaService::getCurrentStamina($battleId, (string)$monsterKey, 'monster');
-            //$monster['current_stamina'] = $currentStamina;
+            $monster['current_stamina'] = $monsterCurrentStamina;
 
             Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) current stamina: $monsterCurrentStamina");
 

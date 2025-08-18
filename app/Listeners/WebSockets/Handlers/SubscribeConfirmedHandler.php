@@ -23,7 +23,7 @@ class SubscribeConfirmedHandler implements HandlesUnityEvent
         // —————————————
         // Canal de personagem
         if (preg_match('/^character\.(\d+)$/', $channel, $matches)) {
-            $characterId = $matches[1];
+            $characterId = (int) $matches[1];
 
             $characterData = Redis::hgetall("character_session:$characterId");
             if (!$characterData) {
@@ -34,16 +34,78 @@ class SubscribeConfirmedHandler implements HandlesUnityEvent
                 return;
             }
 
-            // Responde para Unity que o personagem está conectado
-            $connection->send(json_encode([
-                'event' => 'character_connected',
-                'data' => ['character' => $characterData]
-            ]));
+            // Normaliza tipos básicos
+            if (isset($characterData['id'])) {
+                $characterData['id'] = (int) $characterData['id'];
+            } else {
+                $characterData['id'] = $characterId;
+            }
 
+            if (isset($characterData['user_id'])) {
+                $characterData['user_id'] = (int) $characterData['user_id'];
+            }
+
+            // Normaliza o campo stats: pode ser JSON string, "Array", já-array, etc.
+            $characterData['stats'] = $this->normalizeStatsValue($characterData['stats'] ?? null);
+
+            // Monta payload para enviar — stats já está como array/obj
+            $out = [
+                'event' => 'character_connected',
+                'data'  => ['character' => $characterData],
+            ];
+
+            // Debug: confirme como está o payload antes de enviar
+            Log::debug('[SUBSCRIBECONFIRMED] Outgoing payload', $out);
+
+            $connection->send(json_encode($out, JSON_UNESCAPED_UNICODE));
             return;
         }
 
         // —————————————
-        // (Aqui ficaria a lógica para outros canais, como batalha, se necessário)
+        // Outros canais (se houver)
+    }
+
+    /**
+     * Normaliza um valor de "stats":
+     * - se for array -> retorna array
+     * - se for string JSON -> decodifica
+     * - se for "Array" (literal) -> retorna []
+     * - otherwise -> []
+     */
+    protected function normalizeStatsValue(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_object($value)) {
+            return (array) $value;
+        }
+
+        if (!is_string($value) || $value === '') {
+            return [];
+        }
+
+        // Caso comum: quem gravou no Redis deixou a string JSON (ex: '{"hp":100,...}')
+        $decoded = json_decode($value, true);
+        if (is_array($decoded)) {
+            return $decoded;
+        }
+
+        // Se alguém gravou literalmente "Array" (quando passou array direto para hset), trata como vazio
+        if ($value === 'Array') {
+            return [];
+        }
+
+        // Tentar uma segunda decodificação se for string com aspas escapadas (double-encoded)
+        // ex: "\"{...}\"" -> remove extra aspas e tenta decodificar
+        $trimmed = trim($value, "\"'");
+        $decoded2 = json_decode($trimmed, true);
+        if (is_array($decoded2)) {
+            return $decoded2;
+        }
+
+        // fallback
+        return [];
     }
 }
