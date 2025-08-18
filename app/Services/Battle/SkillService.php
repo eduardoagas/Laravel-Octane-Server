@@ -142,7 +142,7 @@ class SkillService
             }
 
             $attackAttribute = $skill['type'] === 'physical' ? 'strength' : 'intelligence';
-            $baseAttack = $$casterStats[$attackAttribute] ?? 0;
+            $baseAttack = $casterStats[$attackAttribute] ?? 0;
             $damage = $skill['power'] + $baseAttack;
             $strength = match ($skill['level']) {
                 1 => 'weak',

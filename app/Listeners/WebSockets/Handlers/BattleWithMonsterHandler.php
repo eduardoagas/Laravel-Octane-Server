@@ -41,7 +41,11 @@ class BattleWithMonsterHandler
         $stats = $this->normalizeStatsValue($characterRaw['stats'] ?? null);
 
         // garante current_hp
-        $stats['current_hp'] = $stats['current_hp'] ?? ($stats['hp'] ?? 0);
+        $stats['current_hp'] = $stats['hp'] ?? 0;
+        // garante statuses
+        if (!isset($stats['statuses']) || !is_array($stats['statuses'])) {
+            $stats['statuses'] = [];
+        }
 
         // monta payload limpo do personagem (array/obj) — usado para enviar e para persistir na estrutura da battle
         $characterPayload = [
@@ -104,7 +108,11 @@ class BattleWithMonsterHandler
 
         // 7.2️⃣ Monta payload do monstro com current_hp dentro de stats (ARRAY, não string)
         $monsterStats = $monster->stats ? $monster->stats->toArray() : [];
-        $monsterStats['current_hp'] = $monsterStats['current_hp'] ?? ($monsterStats['hp'] ?? 0);
+        $monsterStats['current_hp'] = $monsterStats['hp'] ?? 100;
+        // garante statuses
+        if (!isset($monsterStats['statuses']) || !is_array($monsterStats['statuses'])) {
+            $monsterStats['statuses'] = [];
+        }
 
         $monsterPayload = [
             'monster_id' => $monster->id,

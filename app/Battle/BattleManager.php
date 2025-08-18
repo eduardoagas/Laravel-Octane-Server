@@ -95,6 +95,7 @@ class BattleManager
         $pendingActions = Redis::hgetall($pendingActionsKey);
 
         $processed = false;
+        $needCheckBattleEnd = false; // NOVO: sinaliza se precisamos checar fim após o processamento
 
         foreach ($pendingActions as $characterId => $actionJson) {
             $action = json_decode($actionJson, true);
@@ -151,7 +152,8 @@ class BattleManager
                         ]);
                     }
                     if ($someoneDied) {
-                        $this->checkBattleEnd($battleId);
+                        // NOVO: não chamar checkBattleEnd aqui; apenas marcar que precisaremos checar após processar ações locais
+                        $needCheckBattleEnd = true;
                     }
                 }
 
@@ -162,6 +164,11 @@ class BattleManager
             // marca que terminou a execução
             Redis::del("battle:$battleId:skill_in_execution:$characterId");
             Redis::hdel($pendingActionsKey, $characterId);
+        }
+
+        // NOVO: checa fim de batalha uma vez, usando os arrays locais atualizados
+        if ($needCheckBattleEnd) {
+            $this->checkBattleEnd($battleId, $players, $monsters);
         }
 
         return $processed;
@@ -192,6 +199,8 @@ class BattleManager
         }
 
         $processed = false;
+        $needCheckBattleEnd = false; // NOVO: sinaliza se precisamos checar fim após o processamento
+
 
         foreach ($monsters as $monsterKey => &$monster) {
             $monsterCurrentStamina = StaminaService::getCurrentStamina($battleId, (string)$monsterKey, 'monster');
@@ -275,7 +284,8 @@ class BattleManager
                         ]);
                     }
                     if ($someoneDied) {
-                        $this->checkBattleEnd($battleId);
+                        // não checar imediatamente, apenas sinalizar
+                        $needCheckBattleEnd = true;
                     }
                 }
 
@@ -284,6 +294,9 @@ class BattleManager
             } catch (\Throwable $e) {
                 Log::error("[processBattleMonsters] Erro ao processar ação do monstro {$monsterKey}: " . $e->getMessage(), ['exception' => $e]);
             }
+        }
+        if ($needCheckBattleEnd) {
+            $this->checkBattleEnd($battleId, $players, $monsters);
         }
 
         return $processed;
@@ -399,43 +412,80 @@ class BattleManager
     }
 
 
-    public function checkBattleEnd(string $battleId): void
+    public function checkBattleEnd(string $battleId, ?array $playersLocal = null, ?array $monstersLocal = null): void
     {
-        $playersRaw = Redis::hgetall("battle:$battleId:characters_data");
-        $monstersRaw = Redis::hgetall("battle:$battleId:monsters");
-
-        $allPlayersDead = true;
-        foreach ($playersRaw as $playerJson) {
-            $player = json_decode($playerJson, true);
-            $stats = $player['stats'] ?? null;
-            $stats = is_string($stats) ? json_decode($stats, true) : $stats; // decodifica se estiver como JSON
-            if (($stats['current_hp'] ?? 0) > 0) {
-                $allPlayersDead = false;
+        // Lock Redis para evitar finalização concorrente (com retry curto)
+        $lockKey = "battle:{$battleId}:finish_lock";
+        $gotLock = false;
+        $attempts = 10; // tenta por ~100ms (10 * 10ms)
+        while ($attempts-- > 0) {
+            if (Redis::setnx($lockKey, 1)) {
+                // conseguiu
+                Redis::expire($lockKey, 5); // expira em 5s como safety
+                $gotLock = true;
                 break;
             }
+            // aguarda um pouco antes de tentar novamente (10ms)
+            usleep(10000);
         }
 
-        $allMonstersDead = true;
-        foreach ($monstersRaw as $monsterJson) {
-            $monster = json_decode($monsterJson, true);
-            $stats = $monster['stats'] ?? null;
-            $stats = is_string($stats) ? json_decode($stats, true) : $stats; // decodifica se estiver como JSON
-            if (($stats['current_hp'] ?? 0) > 0) {
-                $allMonstersDead = false;
-                break;
+        if (! $gotLock) {
+            // Se não conseguiu lock após tentativas, loga e continua (finalização é idempotente)
+            Log::warning("[checkBattleEnd] Não conseguiu adquirir lock para $battleId após tentativas; continuará sem lock.");
+        }
+
+        try {
+            // Usar arrays locais se passados (eles já estão decodificados); senão ler do Redis
+            if (is_array($playersLocal)) {
+                $playersIter = array_values($playersLocal); // mantemos só os valores
+            } else {
+                $playersRaw = Redis::hgetall("battle:$battleId:characters_data");
+                $playersIter = array_map(fn($p) => is_string($p) ? json_decode($p, true) : $p, $playersRaw);
             }
-        }
 
-        if ($allPlayersDead) {
-            Log::info("[BattleManager] Todos os jogadores morreram na batalha $battleId. Finalizando...");
-            $this->finishBattle($battleId);
-            return;
-        }
+            if (is_array($monstersLocal)) {
+                $monstersIter = array_values($monstersLocal);
+            } else {
+                $monstersRaw = Redis::hgetall("battle:$battleId:monsters");
+                $monstersIter = array_map(fn($m) => is_string($m) ? json_decode($m, true) : $m, $monstersRaw);
+            }
 
-        if ($allMonstersDead) {
-            Log::info("[BattleManager] Todos os monstros morreram na batalha $battleId. Jogadores venceram!");
-            $this->finishBattle($battleId);
-            return;
+            $allPlayersDead = true;
+            foreach ($playersIter as $player) {
+                $stats = $player['stats'] ?? null;
+                $stats = is_string($stats) ? json_decode($stats, true) : $stats;
+                if (($stats['current_hp'] ?? 0) > 0) {
+                    $allPlayersDead = false;
+                    break;
+                }
+            }
+
+            $allMonstersDead = true;
+            foreach ($monstersIter as $monster) {
+                $stats = $monster['stats'] ?? null;
+                $stats = is_string($stats) ? json_decode($stats, true) : $stats;
+                if (($stats['current_hp'] ?? 0) > 0) {
+                    $allMonstersDead = false;
+                    break;
+                }
+            }
+
+            if ($allPlayersDead) {
+                Log::info("[BattleManager] Todos os jogadores morreram na batalha $battleId. Finalizando...");
+                $this->finishBattle($battleId);
+                return;
+            }
+
+            if ($allMonstersDead) {
+                Log::info("[BattleManager] Todos os monstros morreram na batalha $battleId. Jogadores venceram!");
+                $this->finishBattle($battleId);
+                return;
+            }
+        } finally {
+            // só remove o lock se nós o adquirimos
+            if ($gotLock) {
+                Redis::del($lockKey);
+            }
         }
     }
 }
