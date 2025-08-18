@@ -36,7 +36,7 @@ class SkillService
             'id' => 2,
             'name' => 'Raise Defense',
             'type' => 'buff',
-            'stat' => 'defense',
+            'stat' => 'physical_defense_bonus',
             'bonus' => 5,
             'duration' => 3,
             'stamina_cost' => 10,
@@ -57,7 +57,7 @@ class SkillService
             'id' => 4,
             'name' => 'Raise Defense',
             'type' => 'buff',
-            'stat' => 'defense',
+            'stat' => 'physical_defense_bonus',
             'bonus' => 0,
             'duration' => 3,
             'stamina_cost' => 0,
@@ -94,6 +94,10 @@ class SkillService
         }
         $skill = self::$skills[$skillId];
         $casterId = $caster['instanceId'];
+
+        // NOVO: garante que atributos do caster venham de stats
+        $casterStats = $caster['stats'] ?? [];
+        if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
 
         // Cooldown global apenas para jogadores
         if ($casterType === 'character') {
@@ -137,8 +141,8 @@ class SkillService
                 throw new \InvalidArgumentException("Target is required for damage skills");
             }
 
-            $attackAttribute = $skill['type'] === 'physical' ? 'pattack' : 'mattack';
-            $baseAttack = $caster[$attackAttribute] ?? 0;
+            $attackAttribute = $skill['type'] === 'physical' ? 'strength' : 'intelligence';
+            $baseAttack = $$casterStats[$attackAttribute] ?? 0;
             $damage = $skill['power'] + $baseAttack;
             $strength = match ($skill['level']) {
                 1 => 'weak',
@@ -156,7 +160,7 @@ class SkillService
             if (!$target) {
                 throw new \InvalidArgumentException("Target is required for heal skills");
             }
-            $power = $skill['power'] + $caster['mattack'];
+            $power = $skill['power'] + $casterStats['intelligence'];
         }
 
         $resultJson = Redis::eval(

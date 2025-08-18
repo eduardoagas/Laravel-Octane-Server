@@ -14,7 +14,7 @@ class StaminaService
             'start_time' => $now,
             'initial_stamina' => 0,
             'max_stamina' => $maxStamina,
-            'agility' => $agility,
+            'dexterity' => $agility,
             // NOVO: campo para acumular consumo sem mexer no start_time
             'used_stamina_total' => 0,
         ];
@@ -55,20 +55,20 @@ class StaminaService
         $initial = (float) ($parsed['initial_stamina'] ?? 0.0);
         $sMax = (float) ($parsed['max_stamina'] ?? 0.0);
         //$sMax = 50 + ($sab - 1) * (650.0 / 299.0);
-        $agi = (float) ($parsed['agility'] ?? 0.0);
-        $agi = max(1.0, $agi);
+        $dex = (float) ($parsed['dexterity'] ?? 0.0);
+        $dex = max(1.0, $dex);
 
         // NOVO: lê o consumo acumulado que agora é subtraído do resultado
         $used = (float) ($parsed['used_stamina_total'] ?? 0.0);
 
         $elapsed = now()->timestamp - $startTime;
 
-        Log::info("📊 [getCurrentStamina] Dados extraídos:", compact('startTime', 'initial', 'sMax', 'agi', 'elapsed', 'used')); // incluído used no log (NOVO)
+        Log::info("📊 [getCurrentStamina] Dados extraídos:", compact('startTime', 'initial', 'sMax', 'dex', 'elapsed', 'used')); // incluído used no log (NOVO)
 
         // ---------- constantes (MANTER idênticas ao Lua) ----------
-        $minRate = 2.35;      // regen mínima com agi=1
-        $maxRate = 20.0;     // regen máxima com agi=300
-        $maxAgi = 300.0;     // agilidade máxima
+        $minRate = 2.35;      // regen mínima com dex=1
+        $maxRate = 20.0;     // regen máxima com dex=300
+        $maxDex = 300.0;     // agilidade máxima
         $alpha   = 0.3;      // curva acelerada para agilidade
         // ----------------------------------------------------------
 
@@ -83,7 +83,7 @@ class StaminaService
         ];
 
         // Cálculo da taxa base de regeneração (influência só da agilidade)
-        $agiFactor = pow(min($agi / $maxAgi, 1.0), $alpha);
+        $agiFactor = pow(min($dex / $maxDex, 1.0), $alpha);
         $baseRegen = $minRate + ($maxRate - $minRate) * $agiFactor; // stamina por segundo
 
         // ------- Versão analítica: calcular recovered atravessando bandas (sem loop por segundo) -------

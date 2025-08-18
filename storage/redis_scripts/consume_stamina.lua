@@ -48,13 +48,13 @@ local function main()
   local start_time = tonumber(parsed['start_time'] or 0)
   local initial = tonumber(parsed['initial_stamina'] or 0)
   local sMax = tonumber(parsed['max_stamina'] or 0)
-  local agi = tonumber(parsed['agility'] or 1)
+  local dex = tonumber(parsed['dexterity'] or 1)
   local used = tonumber(parsed['used_stamina_total'] or 0)
 
   -- constants (MANTER idênticas ao PHP)
   local minRate = 2.35
   local maxRate = 20.0
-  local maxAgi = 300.0
+  local maxDex = 300.0
   local alpha = 0.3
 
   -- ABSOLUTE bands (pontos) - MANTER idêntico ao PHP
@@ -68,8 +68,8 @@ local function main()
 
   local elapsed = math.max(0, nowTs - start_time)
 
-  -- baseRegen by agi
-  local agiFactor = math.pow(math.min(agi / maxAgi, 1.0), alpha)
+  -- baseRegen by dex
+  local agiFactor = math.pow(math.min(dex / maxDex, 1.0), alpha)
   local baseRegen = minRate + (maxRate - minRate) * agiFactor -- stamina por segundo
 
   -- effective current BEFORE recovered

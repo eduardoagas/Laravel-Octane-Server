@@ -46,18 +46,22 @@ class ConnectToServerHandler implements HandlesUnityEvent
             Log::info("NOVO PERSONAGEM CRIADO");
 
             $character = Character::where('user_id', $userId)->first();
+
             if (! $character) {
                 $character = Character::create([
-                    'user_id'  => $userId,
-                    'name'     => "Hero_{$userId}",
-                    'maxhp'    => 100,
-                    'hp'       => 100,
-                    'level'    => 1,
-                    'pattack'  => 10,
-                    'mattack'  => 5,
-                    'defense'  => 8,
-                    'agility'  => 7,
-                    'stamina'  => 12,
+                    'user_id' => $userId,
+                    'name'    => "Hero_{$userId}",
+                ]);
+
+                $character->stats()->create([
+                    'hp'            => 100,
+                    'level'         => 1,
+                    'strength'      => 10,
+                    'intelligence'  => 5,
+                    'defense_bonus' => 8,
+                    'mdefense_bonus' => 8,
+                    'dexterity'     => 7,
+                    'stamina'       => 12,
                 ]);
             }
         }
@@ -66,15 +70,20 @@ class ConnectToServerHandler implements HandlesUnityEvent
         // 4) Persiste no Redis
         $characterData = $character->toArray();
 
-        Redis::hmset("session:$token", [
+        // Salva apenas o character_id na sessão
+        Redis::hset("session:$token", [
             'character_id' => $character->id
         ]);
 
-        Redis::hmset("character_session:{$character->id}", [
-            ...$characterData,
-            'user_id' => $userId,
+        // Salva todos os dados do character + stats em uma única chave
+        Redis::hset("character_session:{$character->id}", [
+            'id'         => $characterData['id'],
+            'user_id'    => $userId,
+            'name'       => $characterData['name'],
+            'created_at' => $characterData['created_at'],
+            'updated_at' => $characterData['updated_at'],
+            'stats'      => json_encode($characterData['stats']), // stats como JSON
         ]);
-
         // —————————————
         // 5) Envia instrução para Unity assinar o canal do personagem
         $connection->send(json_encode([

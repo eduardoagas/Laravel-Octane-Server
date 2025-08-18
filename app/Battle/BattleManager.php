@@ -194,10 +194,10 @@ class BattleManager
         $processed = false;
 
         foreach ($monsters as $monsterKey => &$monster) {
-            $currentStamina = StaminaService::getCurrentStamina($battleId, (string)$monsterKey, 'monster');
-            $monster['current_stamina'] = $currentStamina;
+            $monsterCurrentStamina = StaminaService::getCurrentStamina($battleId, (string)$monsterKey, 'monster');
+            //$monster['current_stamina'] = $currentStamina;
 
-            Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) current stamina: $currentStamina");
+            Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) current stamina: $monsterCurrentStamina");
 
             $behavior = $this->resolveBehavior($monster['type'] ?? '');
             if (!$behavior) {
@@ -219,8 +219,8 @@ class BattleManager
             // Checagem de stamina: se insuficiente, ignora ação
             $staminaCost = SkillService::getSkillStaminaCost($action['skill_id']);
             $requiredStamina = $staminaCost ?? 0;
-            if ($currentStamina < $requiredStamina) {
-                Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) não tem stamina suficiente ({$currentStamina} < {$requiredStamina}), ação descartada");
+            if ($monsterCurrentStamina < $requiredStamina) {
+                Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) não tem stamina suficiente ({$monsterCurrentStamina} < {$requiredStamina}), ação descartada");
                 continue;
             }
 
@@ -407,7 +407,9 @@ class BattleManager
         $allPlayersDead = true;
         foreach ($playersRaw as $playerJson) {
             $player = json_decode($playerJson, true);
-            if (($player['hp'] ?? 0) > 0) {
+            $stats = $player['stats'] ?? null;
+            $stats = is_string($stats) ? json_decode($stats, true) : $stats; // decodifica se estiver como JSON
+            if (($stats['current_hp'] ?? 0) > 0) {
                 $allPlayersDead = false;
                 break;
             }
@@ -416,7 +418,9 @@ class BattleManager
         $allMonstersDead = true;
         foreach ($monstersRaw as $monsterJson) {
             $monster = json_decode($monsterJson, true);
-            if (($monster['hp'] ?? 0) > 0) {
+            $stats = $monster['stats'] ?? null;
+            $stats = is_string($stats) ? json_decode($stats, true) : $stats; // decodifica se estiver como JSON
+            if (($stats['current_hp'] ?? 0) > 0) {
                 $allMonstersDead = false;
                 break;
             }

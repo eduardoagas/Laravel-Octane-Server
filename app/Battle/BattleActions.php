@@ -94,9 +94,15 @@ class BattleActions
                     $actionInfoResult = "Buff aplicado: +{$buff['bonus']} {$buff['stat']} por {$buff['duration']} turnos";
                 }
 
-                if ($target && isset($target['hp']) && $target['hp'] <= 0) {
+                // agora current_hp está dentro de stats
+                $targetStats = isset($target['stats'])
+                    ? (is_string($target['stats']) ? json_decode($target['stats'], true) : $target['stats'])
+                    : [];
+
+
+                if (isset($targetStats['current_hp']) && $targetStats['current_hp'] <= 0) {
                     $globalMessages[] = "{$targetName} morreu!";
-                    $someoneDied = true; // marca que alguém morreu
+                    $someoneDied = true;
                 }
 
                 $allResults[] = [
@@ -115,11 +121,11 @@ class BattleActions
 
             foreach (Redis::hgetall("battle:$battleId:characters_data") as $playerId => $playerJson) {
                 $playerData = json_decode($playerJson, true);
-
+                $playerStats = isset($playerData['stats']) ? json_decode($playerData['stats'], true) : [];
                 // constrói o payload do player
                 $playerPayload = [
                     'instanceId' => (string)$playerId,
-                    'currentHp' => (int)($playerData['hp'] ?? 0),
+                    'currentHp' => (int)($playerStats['current_hp'] ?? 0),
                 ];
 
                 // NOVO: Se houver um update de used_stamina_total para esse player (do tipo 'character'), anexa staminaData
@@ -165,11 +171,11 @@ class BattleActions
             $enemiesPayload = [];
             foreach (Redis::hgetall("battle:$battleId:monsters") as $monsterId => $monsterJson) {
                 $monsterData = json_decode($monsterJson, true);
-
+                $monsterStats = isset($monsterData['stats']) ? json_decode($monsterData['stats'], true) : [];
                 // cria monster payload (NOVO: agora construímos o payload completo antes de push)
                 $monsterPayload = [
                     'instanceId' => (string)$monsterId,
-                    'isAlive' => isset($monsterData['hp']) && $monsterData['hp'] > 0,
+                    'isAlive' => isset($monsterStats['current_hp']) && $monsterStats['current_hp'] > 0,
                 ];
 
                 // NOVO: Se houver um update de used_stamina_total para esse monster, anexa staminaData
