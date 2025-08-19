@@ -2,12 +2,13 @@
 
 namespace App\Listeners\WebSockets\Handlers;
 
+use App\Models\Skill;
 use App\Models\Monster;
-use App\Models\Character; // <-- novo: precisamos do model Character aqui
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use App\Services\Battle\StaminaService;
 use Laravel\Reverb\Contracts\Connection;
+use App\Models\Character; // <-- novo: precisamos do model Character aqui
 
 class BattleWithMonsterHandler
 {
@@ -175,6 +176,44 @@ class BattleWithMonsterHandler
         Redis::hset("battle:$battleId:monsters", (string)$monsterInstanceId, json_encode($monsterPayload, JSON_UNESCAPED_UNICODE));
 
         $now = now()->timestamp;
+
+        // 7.4️⃣ Pré-carrega as Skills do monstro (similar ao SoulGrid) para uso rápido durante a batalha
+        try {
+            // Carrega relação skills (assumindo que Monster tem many-to-many ou one-to-many com Skill)
+            $monsterWithSkills = Monster::with('skills')->find($monster->id);
+
+            if ($monsterWithSkills && $monsterWithSkills->skills->isNotEmpty()) {
+                // Se já tiver skills associadas ao monstro, pega do DB
+                $skillsArray = $monsterWithSkills->skills->toArray();
+            } else {
+                // Se não tiver skills associadas, busca Attack e Wait do PostgreSQL pelo ID
+                $attackSkill = Skill::find(1); // substitua 1 pelo ID real da skill Attack
+                $waitSkill   = Skill::find(5); // substitua 5 pelo ID real da skill Wait
+
+                $skillsArray = array_filter([$attackSkill, $waitSkill]); // remove null caso não encontre
+                $skillsArray = array_map(fn($s) => $s->toArray(), $skillsArray);
+
+                Log::info("No skills found for monster; assigning Attack and Wait from DB", [
+                    'monster_instance_id' => $monsterInstanceId,
+                    'monster_id' => $monster->id,
+                    'battle' => $battleId,
+                ]);
+            }
+
+            // Salva no Redis para esta batalha/monstro
+            Redis::set(
+                "battle:$battleId:monster:{$monsterInstanceId}:skills",
+                json_encode($skillsArray, JSON_UNESCAPED_UNICODE)
+            );
+        } catch (\Throwable $e) {
+            // Erro no pré-carregamento: loga e continua
+            Log::error('Failed to preload monster skills for battle', [
+                'monster_instance_id' => $monsterInstanceId,
+                'monster_id' => $monster->id,
+                'battle' => $battleId,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         // 8️⃣ Inicializar stamina do monstro (salva JSON)
         $monsterStaminaData = $this->staminaService->initializeStamina(

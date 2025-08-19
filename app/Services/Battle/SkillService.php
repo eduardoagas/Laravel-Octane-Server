@@ -11,75 +11,6 @@ class SkillService
 {
     private StaminaService $staminaService;
 
-    private static array $skills = [
-        0 => [
-            'id' => 0,
-            'name' => 'Attack',
-            'type' => 'physical',
-            'power' => 0,
-            'stamina_cost' => 20,
-            'pre_delay' => 0,
-            'post_delay' => 500,
-            'level' => 1,
-        ],
-        1 => [
-            'id' => 1,
-            'name' => 'Fire Ball',
-            'type' => 'magical',
-            'power' => 25, //15-25
-            'stamina_cost' => 11, //5-12
-            'pre_delay' => 500,
-            'post_delay' => 1000,
-            'level' => 1,
-        ],
-        2 => [
-            'id' => 2,
-            'name' => 'Raise Defense',
-            'type' => 'buff',
-            'stat' => 'physical_defense_bonus',
-            'bonus' => 5,
-            'duration' => 3,
-            'stamina_cost' => 10,
-            'pre_delay' => 300,
-            'post_delay' => 500,
-            'level' => 1,
-        ],
-        3 => [
-            'id' => 3,
-            'name' => 'Heal',
-            'type' => 'heal',
-            'power' => 20, // quantidade de HP curada
-            'stamina_cost' => 8,
-            'pre_delay' => 400,
-            'post_delay' => 700,
-            'level' => 1,
-        ],
-        4 => [
-            'id' => 4,
-            'name' => 'Wait',
-            'type' => 'buff',
-            'stat' => 'physical_defense_bonus',
-            'bonus' => 0,
-            'duration' => 3,
-            'stamina_cost' => 0,
-            'pre_delay' => 300,
-            'post_delay' => 500,
-            'level' => 1,
-        ],
-        5 => [
-            'id' => 5,
-            'name' => 'Death',
-            'type' => 'debuff',
-            'stat' => 'death',
-            'bonus' => 0,
-            'power' => 20,
-            'stamina_cost' => 10,
-            'pre_delay' => 300,
-            'post_delay' => 500,
-            'level' => 1,
-        ]
-    ];
-
     public function __construct()
     {
         $this->staminaService = new StaminaService();
@@ -107,9 +38,32 @@ class SkillService
         if (!isset(self::$skills[$skillId])) {
             throw new \InvalidArgumentException("Skill $skillId not found");
         }
-
-        $skill = self::$skills[$skillId];
         $casterId = $caster['instanceId'];
+        // 1️⃣ Busca as skills do Redis
+        $redisSkillKey = "battle:$battleId:{$casterType}:{$casterId}:skills";
+        $skillsRaw = Redis::get($redisSkillKey);
+        if (!$skillsRaw) {
+            throw new \RuntimeException("No skills loaded in Redis for $casterType:$casterId");
+        }
+
+        $skillsArray = json_decode($skillsRaw, true);
+        if (!$skillsArray || !is_array($skillsArray)) {
+            throw new \RuntimeException("Invalid skills data in Redis for $casterType:$casterId");
+        }
+
+        // 2️⃣ Localiza a skill pelo skillId
+        $skill = null;
+        foreach ($skillsArray as $s) {
+            if ((int)($s['id'] ?? -1) === $skillId) {
+                $skill = $s;
+                break;
+            }
+        }
+        if (!$skill) {
+            throw new \InvalidArgumentException("Skill $skillId not found in Redis for $casterType:$casterId");
+        }
+
+
 
         // NOVO: garante que atributos do caster venham de stats
         $casterStats = $caster['stats'] ?? [];

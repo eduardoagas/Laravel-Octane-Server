@@ -16,4 +16,9 @@ class Monster extends Model
     {
         return $this->hasOne(Stats::class);
     }
+
+    public function skills()
+    {
+        return $this->belongsToMany(Skill::class, 'monster_skill', 'monster_id', 'skill_id');
+    }
 }

@@ -208,16 +208,27 @@ class BattleManager
 
             Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) current stamina: $monsterCurrentStamina");
 
+            // 1️⃣ Carrega as skills do Redis
+            $skillsJson = Redis::get("battle:$battleId:monster:{$monsterKey}:skills");
+            $monsterSkills = $skillsJson ? json_decode($skillsJson, true) : [];
+
+            if (!$monsterSkills) {
+                Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) não possui skills carregadas");
+            }
+
             $behavior = $this->resolveBehavior($monster['type'] ?? '');
+
             if (!$behavior) {
                 Log::warning("[processBattleMonsters] Behavior não encontrado para tipo {$monster['type']}");
                 continue;
             }
 
+            // 2️⃣ Passa o array de skills como parte do contexto
             $action = $behavior->decideAction($monster, [
                 'monsters' => $monsters,
                 'players' => $players,
                 'battle_id' => $battleId,
+                'skills' => $monsterSkills, // <-- aqui
             ]);
 
             if (!$action) {
