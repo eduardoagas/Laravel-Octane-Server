@@ -94,12 +94,22 @@ class BattleWithMonsterHandler
             if ($characterModel && $characterModel->equippedSoulGrid) {
                 $equippedGrid = $characterModel->equippedSoulGrid;
 
-                // Normaliza para array (inclui souls.skills via eager load)
-                $equippedGridArray = $equippedGrid->toArray();
+                $soulsArray = $equippedGrid->souls()->with('skills')->get()->map(function ($soul) {
+                    return [
+                        'id' => $soul->id,
+                        'name' => $soul->name,
+                        'skills' => $soul->skills->map(fn($skill) => [
+                            'id' => $skill->id,
+                            'name' => $skill->name,
+                            'power' => $skill->power,
+                            'stamina_cost' => $skill->stamina_cost,
+                        ])->toArray()
+                    ];
+                })->values()->toArray();
 
                 // Salva a estrutura completa do grid no Redis para esta batalha/character
                 // Key: battle:$battleId:character:{$characterId}:equipped_soul_grid
-                Redis::set("battle:$battleId:character:{$characterId}:equipped_soul_grid", json_encode($equippedGridArray, JSON_UNESCAPED_UNICODE));
+                Redis::set("battle:$battleId:character:{$characterId}:equipped_soul_grid", json_encode($soulsArray, JSON_UNESCAPED_UNICODE));
 
                 // Log para debug/performance
                 Log::info("Equipped SoulGrid preloaded into Redis for battle", [
@@ -120,6 +130,28 @@ class BattleWithMonsterHandler
                 'character_id' => $characterId,
                 'battle' => $battleId,
                 'error' => $e->getMessage(),
+            ]);
+        }
+
+        // Determina slot inicial da soul ativa
+        // Determina slot inicial da soul ativa usando o array já mapeado com skills
+        $preferredSlot = $characterModel->preferred_soul_slot ?? 0;
+        $activeSoul = $soulsArray[$preferredSlot] ?? null;
+
+        if ($activeSoul) {
+            // Marca soul ativa no Redis
+            Redis::set("battle:$battleId:character:{$characterId}:active_soul_id", $activeSoul['id']);
+
+            // Salva também as skills dessa soul para uso imediato
+            Redis::set(
+                "battle:$battleId:character:{$characterId}:skills",
+                json_encode($activeSoul['skills'] ?? [], JSON_UNESCAPED_UNICODE)
+            );
+
+            Log::info("Active soul preloaded for battle", [
+                'battle' => $battleId,
+                'character_id' => $characterId,
+                'active_soul_id' => $activeSoul['id'],
             ]);
         }
         /* === FIM NOVO === */

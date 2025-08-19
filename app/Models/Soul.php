@@ -6,7 +6,9 @@ use Illuminate\Database\Eloquent\Model;
 
 class Soul extends Model
 {
-    protected $casts = ['slots_count'];
+    protected $casts = [
+        'slots_count' => 'integer',
+    ];
 
     public function activationBonuses()
     {
@@ -14,6 +16,14 @@ class Soul extends Model
             ->withPivot('value')
             ->withTimestamps();
     }
+
+    protected $fillable = [
+        'name',
+        'monster_source_id',
+        'slots_count',
+        'character_id',
+        'soul_inventory_id',
+    ];
 
     public function soulInventory()
     {

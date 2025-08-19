@@ -19,6 +19,7 @@ return new class extends Migration
                 ->nullable()
                 ->constrained('soul_grids')
                 ->nullOnDelete(); // se a grid for deletada, seta null
+            $table->unsignedInteger('preferred_soul_slot')->default(0); // slot inicial da SoulGrid
             $table->timestamps();
         });
     }

@@ -1,6 +1,5 @@
 <?php
 
-
 namespace App\Listeners\WebSockets\Handlers;
 
 use Illuminate\Support\Facades\Log;
@@ -14,9 +13,8 @@ class CanUseSkillHandler implements HandlesUnityEvent
 {
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
     {
-
         $data = $payload['data'] ?? [];
-        $skillId = $data['skill_id'] ?? null;
+        $skillIndex = $data['skill_id'] ?? null; // agora é índice do array
         $targetType = $data['target_type'] ?? null; // 'enemy' ou 'player'
         $targetId = $data['target_id'] ?? null;
 
@@ -25,9 +23,9 @@ class CanUseSkillHandler implements HandlesUnityEvent
         $battleId = $session['battle_instance_id'] ?? null;
         $characterId = $session['character_id'] ?? null;
 
-        if (!$battleId || !$characterId || $skillId === null) {
+        if (!$battleId || !$characterId || $skillIndex === null) {
             $connection->send(json_encode([
-                'error' => 'Dados inválidos: battle_id, character_id ou skill_id ausentes'
+                'error' => 'Dados inválidos: battle_id, character_id ou skill_index ausentes'
             ]));
             return;
         }
@@ -39,34 +37,52 @@ class CanUseSkillHandler implements HandlesUnityEvent
             return;
         }
 
+        // 1️⃣ Busca skills do Redis
+        $skillsRaw = Redis::get("battle:$battleId:character:{$characterId}:skills");
+        if (!$skillsRaw) {
+            $connection->send(json_encode([
+                'error' => 'Skills não carregadas para o personagem nesta batalha'
+            ]));
+            return;
+        }
+        $skillsArray = json_decode($skillsRaw, true);
+
+        if (!isset($skillsArray[$skillIndex])) {
+            $connection->send(json_encode([
+                'error' => "Skill com índice $skillIndex não encontrada"
+            ]));
+            return;
+        }
+
+        $skill = $skillsArray[$skillIndex];
+
         // Checa stamina
         $stamina = StaminaService::getCurrentStamina($battleId, $characterId);
-        $cost = SkillService::getSkillStaminaCost($skillId);
+        $cost = $skill['stamina_cost'] ?? 0;
 
         $canUse = $stamina >= $cost;
 
         // Cache temporário da ação se possível
         if ($canUse) {
             $pendingCacheKey = "battle:$battleId:pending_actions_cache:$characterId";
-            // Cria payload da ação
             $actionPayload = [
                 'caster_id' => $characterId,
                 'caster_type' => 'character',
-                'skill_id' => (int) $skillId,
+                'skill_id' => $skill['id'], // envia o id real do skill do banco
                 'target_type' => $targetType,
                 'target_id' => $targetId,
                 'timestamp' => time(),
             ];
             Redis::set($pendingCacheKey, json_encode($actionPayload));
         } else {
-            Log::channel("battle_debug")->info("SEM STAMINA");
+            Log::channel("battle_debug")->info("SEM STAMINA para skill {$skill['name']}");
         }
-
 
         $connection->send(json_encode([
             'event' => 'skillQueued',
             'data' => [
-                'skillId' => (int) $skillId,
+                'skillId' => $skill['id'] ?? null,
+                'canUse' => $canUse,
             ]
         ]));
     }

@@ -2,12 +2,13 @@
 
 namespace App\Battle;
 
-use App\Battle\BattleActions as BattleBattleActions;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Redis;
-use App\Services\Battle\StaminaService;
-use App\Services\Battle\BattleActions;
 use App\Services\Battle\SkillService;
+use Illuminate\Support\Facades\Redis;
+use App\Services\Battle\BattleActions;
+use App\Services\Battle\StaminaService;
+use App\Services\Battle\BattleBroadcaster;
+use App\Battle\BattleActions as BattleBattleActions;
 
 class BattleManager
 {
@@ -91,87 +92,32 @@ class BattleManager
             $players[$k] = $p;
         }
 
-        $pendingActionsKey = "battle:$battleId:pending_actions";
-        $pendingActions = Redis::hgetall($pendingActionsKey);
+        $processedAny = false;
+        $needCheckBattleEnd = false;
 
-        $processed = false;
-        $needCheckBattleEnd = false; // NOVO: sinaliza se precisamos checar fim após o processamento
-
-        foreach ($pendingActions as $characterId => $actionJson) {
-            $action = json_decode($actionJson, true);
-
-            if (!isset($players[$characterId])) {
-                Redis::hdel($pendingActionsKey, $characterId);
-                continue;
-            }
-
-            $caster = &$players[$characterId];
-
-            // LOG: ação recebida
-            Log::channel('battle_debug')->info("[processBattleUsers] Processing action", [
-                'characterId' => $characterId,
-                'caster' => $caster,
-                'action' => $action
-            ]);
-
-            $targets = $this->resolveTargets($action, $caster, $players, $monsters, 'character');
-
-            // LOG: targets resolvidos
-            Log::channel('battle_debug')->info("[processBattleUsers] Targets resolved", [
-                'characterId' => $characterId,
-                'targets' => $targets
-            ]);
-
-            try {
-                $skillId = (int)($action['skill_id'] ?? 0);
-                $battleActions = new \App\Battle\BattleActions();
-
-                foreach ($targets as $t) {
-                    $targetId = $t['refInstanceId'];
-                    $targetKey = $t['ref_key'];
-
-                    $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
-                    $targetRef = $targetJson ? json_decode($targetJson, true) : null;
-                    Log::channel('battle_debug')->info("[BattleManager before execute action] TARGETREF = " . $targetJson);
-                    $someoneDied = $battleActions->executeAction($caster, $skillId, $targetRef, $battleId, 'character', $t['category']);
-
-
-                    $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
-                    if ($freshJson) {
-                        $fresh = json_decode($freshJson, true);
-                        if ($targetKey === 'monsters') {
-                            $monsters[$targetId] = $fresh;
-                        } else {
-                            $players[$targetId] = $fresh;
-                        }
-                    } else {
-                        Log::warning("After applySkill, fresh entity missing in Redis", [
-                            'battleId' => $battleId,
-                            'targetKey' => $targetKey,
-                            'targetId' => $targetId
-                        ]);
-                    }
-                    if ($someoneDied) {
-                        // NOVO: não chamar checkBattleEnd aqui; apenas marcar que precisaremos checar após processar ações locais
-                        $needCheckBattleEnd = true;
-                    }
-                }
-
-                $processed = true;
-            } catch (\Exception $e) {
-                Log::error("Error processing action for player $characterId: " . $e->getMessage(), ['exception' => $e]);
-            }
-            // marca que terminou a execução
-            Redis::del("battle:$battleId:skill_in_execution:$characterId");
-            Redis::hdel($pendingActionsKey, $characterId);
+        // PRIORIDADE: processa primeiro trocas de soul pendentes
+        $soulChangesProcessed = $this->processPendingSoulChanges($battleId);
+        if ($soulChangesProcessed) {
+            $processedAny = true;
+            // soul changes podem alterar skills -> marca last update já internamente
+            // não precisamos checar fim de batalha aqui por conta própria (troca de soul não mata ninguém)
         }
 
-        // NOVO: checa fim de batalha uma vez, usando os arrays locais atualizados
+        // Depois processa ações (skills/ataques) dos jogadores
+        $result = $this->processPendingActions($battleId, $players, $monsters);
+        if ($result['processed']) {
+            $processedAny = true;
+        }
+        if ($result['needCheckBattleEnd']) {
+            $needCheckBattleEnd = true;
+        }
+
+        // Checa fim de batalha uma vez, usando os arrays locais atualizados
         if ($needCheckBattleEnd) {
             $this->checkBattleEnd($battleId, $players, $monsters);
         }
 
-        return $processed;
+        return $processedAny;
     }
 
     public function processBattleMonsters(string $battleId): bool
@@ -311,6 +257,110 @@ class BattleManager
         }
 
         return $processed;
+    }
+
+    /**
+     * Processa pending actions (ações de jogadores) para a batalha.
+     *
+     * Recebe $players e $monsters por referência para manter o estado local atualizado
+     * após cada aplicação de skill (fresh entities lidas do Redis).
+     *
+     * Retorna array:
+     *  - 'processed' => bool (se processou ao menos uma ação)
+     *  - 'needCheckBattleEnd' => bool (se houve alguém morto e precisamos checar fim)
+     */
+    public function processPendingActions(string $battleId, array &$players, array &$monsters): array
+    {
+        $pendingActionsKey = "battle:$battleId:pending_actions";
+        $pendingActions = Redis::hgetall($pendingActionsKey);
+
+        $processed = false;
+        $needCheckBattleEnd = false;
+
+        if (empty($pendingActions)) {
+            return ['processed' => false, 'needCheckBattleEnd' => false];
+        }
+
+        foreach ($pendingActions as $characterId => $actionJson) {
+            $action = json_decode($actionJson, true);
+
+            // se o player não existe mais no contexto da batalha, remove a entry
+            if (!isset($players[$characterId])) {
+                Redis::hdel($pendingActionsKey, $characterId);
+                continue;
+            }
+
+            $caster = &$players[$characterId];
+
+            // LOG: ação recebida
+            Log::channel('battle_debug')->info("[processPendingActions] Processing action", [
+                'characterId' => $characterId,
+                'caster' => $caster,
+                'action' => $action
+            ]);
+
+            $targets = $this->resolveTargets($action, $caster, $players, $monsters, 'character');
+
+            // LOG: targets resolvidos
+            Log::channel('battle_debug')->info("[processPendingActions] Targets resolved", [
+                'characterId' => $characterId,
+                'targets' => $targets
+            ]);
+
+            try {
+                $skillId = (int)($action['skill_id'] ?? 0);
+                $battleActions = new \App\Battle\BattleActions();
+
+                foreach ($targets as $t) {
+                    $targetId = $t['refInstanceId'];
+                    $targetKey = $t['ref_key'];
+
+                    $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
+                    $targetRef = $targetJson ? json_decode($targetJson, true) : null;
+
+                    Log::channel('battle_debug')->info("[processPendingActions] Executing action", [
+                        'battleId' => $battleId,
+                        'casterId' => $characterId,
+                        'skillId' => $skillId,
+                        'targetKey' => $targetKey,
+                        'targetId' => $targetId,
+                    ]);
+
+                    $someoneDied = $battleActions->executeAction($caster, $skillId, $targetRef, $battleId, 'character', $t['category']);
+
+                    // atualiza estado local com a "fresh" entidade do Redis
+                    $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
+                    if ($freshJson) {
+                        $fresh = json_decode($freshJson, true);
+                        if ($targetKey === 'monsters') {
+                            $monsters[$targetId] = $fresh;
+                        } else {
+                            $players[$targetId] = $fresh;
+                        }
+                    } else {
+                        Log::warning("[processPendingActions] After applySkill, fresh entity missing in Redis", [
+                            'battleId' => $battleId,
+                            'targetKey' => $targetKey,
+                            'targetId' => $targetId
+                        ]);
+                    }
+
+                    if ($someoneDied) {
+                        $needCheckBattleEnd = true;
+                    }
+                }
+
+                $processed = true;
+            } catch (\Exception $e) {
+                Log::error("[processPendingActions] Error processing action for player $characterId: " . $e->getMessage(), ['exception' => $e]);
+            }
+
+            // marca que terminou a execução e remove pending cache
+            Redis::del("battle:$battleId:skill_in_execution:$characterId");
+            Redis::hdel($pendingActionsKey, $characterId);
+        }
+
+        return ['processed' => $processed, 'needCheckBattleEnd' => $needCheckBattleEnd];
     }
 
     protected function resolveBehavior(string $type)
@@ -498,5 +548,164 @@ class BattleManager
                 Redis::del($lockKey);
             }
         }
+    }
+
+    /**
+     * Processa mudanças de soul enfileiradas para a batalha.
+     * (mantive o método que você já tinha — sem alterações aqui)
+     */
+    public function processPendingSoulChanges(string $battleId): bool
+    {
+        $pendingKey = "battle:$battleId:pending_soul_changes";
+        $entries = Redis::hgetall($pendingKey);
+
+        if (!$entries) {
+            // nada a processar
+            return false;
+        }
+
+        $processedAny = false;
+
+        foreach ($entries as $characterId => $actionJson) {
+            $characterId = (string)$characterId;
+            $action = json_decode($actionJson, true);
+
+            if (!is_array($action)) {
+                Log::warning("[processPendingSoulChanges] ação inválida ou JSON malformado", [
+                    'battle' => $battleId,
+                    'character_id' => $characterId,
+                    'raw' => $actionJson,
+                ]);
+                // limpa entrada corrupta e o lock (safety)
+                Redis::hdel($pendingKey, $characterId);
+                Redis::del("battle:$battleId:soul_change_in_execution:$characterId");
+                continue;
+            }
+
+            $slotIndex = isset($action['slot_index']) ? (int)$action['slot_index'] : null;
+
+            if ($slotIndex === null) {
+                Log::warning("[processPendingSoulChanges] slot_index ausente na ação", [
+                    'battle' => $battleId,
+                    'character_id' => $characterId,
+                    'action' => $action,
+                ]);
+                Redis::hdel($pendingKey, $characterId);
+                Redis::del("battle:$battleId:soul_change_in_execution:$characterId");
+                continue;
+            }
+
+            // Recupera grid equipado do Redis (pré-carregado no início da batalha)
+            $gridKey = "battle:$battleId:character:{$characterId}:equipped_soul_grid";
+            $gridRaw = Redis::get($gridKey);
+
+            if (!$gridRaw) {
+                Log::warning("[processPendingSoulChanges] equipped_soul_grid não encontrado no Redis", [
+                    'battle' => $battleId,
+                    'character_id' => $characterId,
+                ]);
+                // não há grid; remove pending e o lock para não travar
+                Redis::hdel($pendingKey, $characterId);
+                Redis::del("battle:$battleId:soul_change_in_execution:$characterId");
+                continue;
+            }
+
+            $soulsArray = json_decode($gridRaw, true);
+
+            if (!is_array($soulsArray) || !isset($soulsArray[$slotIndex])) {
+                Log::warning("[processPendingSoulChanges] slot inválido para equipped_soul_grid", [
+                    'battle' => $battleId,
+                    'character_id' => $characterId,
+                    'slot_index' => $slotIndex,
+                ]);
+                // remove pending e lock - cliente provavelmente enviou slot errado
+                Redis::hdel($pendingKey, $characterId);
+                Redis::del("battle:$battleId:soul_change_in_execution:$characterId");
+                continue;
+            }
+
+            $activeSoul = $soulsArray[$slotIndex];
+
+            // Segurança: garante que `skills` esteja em array
+            $activeSkills = $activeSoul['skills'] ?? [];
+            if (!is_array($activeSkills)) $activeSkills = [];
+
+            // Faz update atômico (multi/exec)
+            try {
+                Redis::multi();
+
+                // atualiza soul ativa e skills
+                Redis::set("battle:$battleId:character:{$characterId}:active_soul_id", $activeSoul['id'] ?? null);
+                Redis::set(
+                    "battle:$battleId:character:{$characterId}:skills",
+                    json_encode($activeSkills, JSON_UNESCAPED_UNICODE)
+                );
+
+                // remove pending entry e libera lock
+                Redis::hdel($pendingKey, $characterId);
+                Redis::del("battle:$battleId:soul_change_in_execution:$characterId");
+
+                // aplica tudo
+                Redis::exec();
+
+                // marca last update da battle para que monitor/loop saiba que algo mudou
+                $this->updateLastUpdate($battleId);
+
+                Log::info("[processPendingSoulChanges] Soul change aplicado", [
+                    'battle' => $battleId,
+                    'character_id' => $characterId,
+                    'slot_index' => $slotIndex,
+                    'new_active_soul_id' => $activeSoul['id'] ?? null,
+                    'skills_count' => count($activeSkills),
+                ]);
+
+                // 🔥 Broadcast da troca concluída
+                try {
+                    $characterName = Redis::get("battle:$battleId:character:{$characterId}:name") ?? "Jogador $characterId";
+                    $soulName = $activeSoul['name'] ?? 'Soul desconhecida';
+
+                    $updatePayload = [
+                        'players' => [
+                            $characterId => [
+                                'soulSlotIndex' => $slotIndex,
+                            ]
+                        ],
+                        'enemies' => [],
+                        'general' => [
+                            'actionInfoUse' => "$characterName trocou de Soul",
+                            'actionInfoResult' => "Nova Soul ativa: $soulName",
+                            'globalMessages' => ["$characterName agora está usando $soulName"],
+                        ],
+                    ];
+
+                    BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
+                } catch (\Throwable $e) {
+                    Log::error("[processPendingSoulChanges] Erro ao enviar broadcast da troca de soul", [
+                        'battle' => $battleId,
+                        'character_id' => $characterId,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+
+                $processedAny = true;
+            } catch (\Throwable $e) {
+                // tenta limpar multi/exec e restabelecer estado consistente
+                try {
+                    Redis::discard();
+                } catch (\Throwable $_) {
+                }
+                Log::error("[processPendingSoulChanges] erro aplicando soul change", [
+                    'battle' => $battleId,
+                    'character_id' => $characterId,
+                    'error' => $e->getMessage(),
+                    'action' => $action,
+                ]);
+                // como fallback, remove pending e lock para não travar eternamente
+                Redis::hdel($pendingKey, $characterId);
+                Redis::del("battle:$battleId:soul_change_in_execution:$characterId");
+            }
+        }
+
+        return $processedAny;
     }
 }

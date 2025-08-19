@@ -6,6 +6,13 @@ use Illuminate\Database\Eloquent\Model;
 
 class SoulGrid extends Model
 {
+
+    protected $fillable = [
+        'name',
+        'slots_count',
+        'soul_grid_inventory_id',
+    ];
+
     public function replicateForCharacter(Character $character): SoulGrid
     {
         // Cria nova instância da SoulGrid (baseada neste template)
@@ -21,7 +28,7 @@ class SoulGrid extends Model
     }
     public function character()
     {
-        return $this->belongsTo(Character::class);
+        return $this->hasOne(Character::class, 'equipped_soul_grid_id');
     }
 
     public function soulGridInventory()
