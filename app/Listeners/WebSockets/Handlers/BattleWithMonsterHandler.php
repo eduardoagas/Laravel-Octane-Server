@@ -274,6 +274,7 @@ class BattleWithMonsterHandler
                         'currentHp'   => (int)($stats['current_hp'] ?? ($stats['hp'] ?? 0)),
                         'staminaData' => $characterStaminaData,
                         'stats'       => $stats, // envia stats como objeto/array
+                        'soulSlotIndex ' => $preferredSlot,
                     ]
                 ],
                 'monsters' => [

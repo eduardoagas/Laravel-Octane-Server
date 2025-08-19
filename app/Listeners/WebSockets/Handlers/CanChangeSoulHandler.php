@@ -11,7 +11,7 @@ use App\Listeners\WebSockets\Contracts\HandlesUnityEvent;
  * Payload esperado (evento "CanChangeSoul"):
  * [
  *   'data' => [
- *     'slot_index' => int // índice 0-based da soul no equipped_soul_grid
+ *     'slotIndex' => int // índice 0-based da soul no equipped_soul_grid
  *   ]
  * ]
  *
@@ -30,7 +30,7 @@ class CanChangeSoulHandler implements HandlesUnityEvent
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
     {
         $data = $payload['data'] ?? [];
-        $slotIndex = $data['slot_index'] ?? null;
+        $slotIndex = $data['slotIndex'] ?? null;
 
         if ($slotIndex === null) {
             $connection->send(json_encode(['error' => 'Slot index não fornecido']));
@@ -101,8 +101,7 @@ class CanChangeSoulHandler implements HandlesUnityEvent
             'event' => 'soulChangeQueued',
             'data' => [
                 'slot_index' => (int)$slotIndex,
-                'canChange' => true,
-                'new_active_soul_id' => $newActiveSoul['id'] ?? null,
+                //'new_active_soul_id' => $newActiveSoul['id'] ?? null,
             ]
         ]));
     }

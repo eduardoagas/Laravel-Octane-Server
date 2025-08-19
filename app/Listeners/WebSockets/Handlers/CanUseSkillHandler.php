@@ -82,7 +82,6 @@ class CanUseSkillHandler implements HandlesUnityEvent
             'event' => 'skillQueued',
             'data' => [
                 'skillId' => $skill['id'] ?? null,
-                'canUse' => $canUse,
             ]
         ]));
     }
