@@ -83,14 +83,7 @@ class CanChangeSoulHandler implements HandlesUnityEvent
         $executionKey = "battle:$battleId:soul_change_in_execution:{$playerInstanceId}";
         if (Redis::exists($executionKey)) {
             Log::info("[CanChangeSoulHandler] Já há uma troca de soul em execução para instance {$playerInstanceId}");
-            $connection->send(json_encode([
-                'event' => 'soulChangeQueued',
-                'data' => [
-                    'slot_index' => (int)$slotIndex,
-                    'canChange' => false,
-                    'reason' => 'soul_change_in_execution'
-                ]
-            ]));
+
             return;
         }
 
@@ -159,8 +152,6 @@ class CanChangeSoulHandler implements HandlesUnityEvent
             'event' => 'soulChangeQueued',
             'data' => [
                 'slot_index' => (int)$slotIndex,
-                'canChange' => true,
-                'new_active_soul_id' => $newActiveSoul['id'] ?? null,
             ]
         ]));
     }

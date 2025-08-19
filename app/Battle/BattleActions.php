@@ -87,6 +87,22 @@ class BattleActions
                 } elseif (isset($result['buff_applied'])) {
                     $buff = $result['buff_applied'];
                     $actionInfoResult = "Buff aplicado: +{$buff['bonus']} {$buff['stat']} por {$buff['duration']} turnos";
+                } elseif (isset($result['debuff_applied'])) {
+                    $debuff = $result['debuff_applied'];
+                    $actionInfoResult = "Debuff aplicado em {$targetName}: -{$debuff['stat']} ({$debuff['power']}) por {$debuff['duration']} turnos";
+                    $globalMessages[] = "⚡ Debuff de {$debuff['stat']} aplicado com sucesso em {$targetName}!";
+                } elseif (!empty($result['debuff_failed'])) {
+                    $chance = $result['debuff_chance'] ?? null;
+                    $roll   = $result['debuff_roll'] ?? null;
+                    $actionInfoResult = "Debuff falhou em {$targetName}";
+                    $globalMessages[] = "❌ Debuff em {$targetName} falhou (chance: " . round($chance * 100, 1) . "%, roll: {$roll})";
+
+                    Log::channel('battle_debug')->warning("[executeAction] Debuff falhou", [
+                        'caster' => $casterName,
+                        'target' => $targetName,
+                        'chance' => $chance,
+                        'roll'   => $roll
+                    ]);
                 }
 
                 // Garante stats como array

@@ -9,6 +9,7 @@ class Stats extends Model
     protected $fillable = [
         'hp',
         'level',
+        'stamina',
         'strength',
         'intelligence',
         'vitality',
@@ -21,7 +22,6 @@ class Stats extends Model
         'dexterity_bonus',
         'luck_bonus',
         'wisdom_bonus',
-        'stamina',
         'nstatus_resistance',
         'nstats_potency',
         'burn_resistance',

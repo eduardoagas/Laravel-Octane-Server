@@ -189,7 +189,8 @@ class SkillService
             $target['instanceId'],
             $power,
             $skill['stat'] ?? '',
-            $skill['duration'] ?? 0
+            $skill['duration'] ?? 0,
+            $skill['level']
         );
 
         $result = json_decode($resultJson, true);
@@ -221,6 +222,10 @@ class SkillService
             'damage_dealt' => $result['damage_dealt'] ?? null,
             'healed_amount' => $result['healed_amount'] ?? null,
             'buff_applied' => $result['buff_applied'] ?? null,
+            'debuff_applied' => $result['debuff_applied'] ?? null,
+            'debuff_chance' => $result['debuff_chance'] ?? null,
+            'debuff_roll' => $result['debuff_roll'] ?? null,
+            'debuff_failed' => $result['debuff_failed'] ?? null,
         ];
     }
 

@@ -20,7 +20,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'name' => 'Attack',
             'type' => 'physical',
             'power' => 0,
-            'stamina_cost' => 20,
+            'stamina_cost' => 10,
             'pre_delay' => 0,
             'post_delay' => 500,
             'level' => 1,
@@ -70,6 +70,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'type' => 'debuff',
             'stat' => 'death',
             'bonus' => 0,
+            'duration' => 5, //necessary as it is
             'power' => 20,
             'stamina_cost' => 10,
             'pre_delay' => 300,
@@ -179,7 +180,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
 
         // === 2. Cria stats iniciais ===
         $character->stats()->create([
-            'hp'             => 100,
+            'hp'             => 1000,
             'level'          => 1,
             'strength'       => 10,
             'intelligence'   => 5,
@@ -190,17 +191,15 @@ class ConnectToServerHandler implements HandlesUnityEvent
         ]);
 
         // === 3. Cria inventários vazios ===
-        $character->soulInventory()->create();      // inventário vazio de Souls
-        $character->soulGridInventory()->create();  // inventário vazio de SoulGrids
+        $character->soulInventory()->create();
+        $character->soulGridInventory()->create();
 
-        // === 4. Cria Skills iniciais, se não existirem ===
+        // === 4. Cria Skills iniciais no DB, se não existirem ===
         $this->createDefaultSkills();
 
         // === 5. Replica e equipa SoulGrid inicial ===
         $templateGrid = SoulGrid::where('name', 'Starter Grid')->first();
-
         if (!$templateGrid) {
-            // Cria template caso não exista
             $templateGrid = SoulGrid::create([
                 'name'        => 'Starter Grid',
                 'slots_count' => 4,
@@ -216,41 +215,63 @@ class ConnectToServerHandler implements HandlesUnityEvent
             ]);
         }
 
-        // Replica grid
         $equippedGrid = $templateGrid->replicate();
         $equippedGrid->soul_grid_inventory_id = $character->soulGridInventory->id ?? null;
         $equippedGrid->save();
 
-        // Replica stats da grid
         if ($templateGrid->stats) {
             $newStats = $templateGrid->stats->replicate();
             $newStats->soul_grid_id = $equippedGrid->id;
             $newStats->save();
         }
 
-        // Atualiza character
         $character->equipped_soul_grid_id = $equippedGrid->id;
         $character->save();
 
         // === 6. Cria algumas Souls iniciais e equipa na grid ===
         $initialSoulsData = [
-            ['name' => 'Soul A'],
-            ['name' => 'Soul B'],
+            ['name' => 'Soul A', 'skills' => [1, 2, 3, 5]],
+            ['name' => 'Soul B', 'skills' => [5, 3, 2, 1]],
         ];
 
+        $soulsForRedis = [];
         foreach ($initialSoulsData as $soulData) {
-            $soul = Soul::create($soulData);
-            $soul->skills()->sync([0, 1, 2, 5]); // Skills iniciais
+            $soul = Soul::create(['name' => $soulData['name']]);
+            $soul->skills()->sync($soulData['skills']);
             $equippedGrid->souls()->attach($soul->id);
+
+            // Monta skills completas para o Redis
+            $skillsArray = $soul->skills()->get()->map(fn($skill) => [
+                'id'          => $skill->id,
+                'name'        => $skill->name,
+                'type'        => $skill->type,
+                'power'       => $skill->power ?? 0,
+                'stamina_cost' => $skill->stamina_cost ?? 0,
+                'pre_delay'   => $skill->pre_delay ?? 0,
+                'post_delay'  => $skill->post_delay ?? 0,
+                'duration' => $skill->duration ?? 0,
+                'level' => $skill->level ?? 1,
+                'stat' => $skill->stat
+            ])->toArray();
+
+            $soulsForRedis[] = [
+                'id'     => $soul->id,
+                'name'   => $soul->name,
+                'skills' => $skillsArray,
+            ];
         }
 
-        // === 7. Salva dados no Redis para Unity ===
+        // === 7. Salva grid e souls no Redis ===
+        $gridKey = "battle:{$character->id}:character:{$character->id}:equipped_soul_grid";
+        Redis::set($gridKey, json_encode($soulsForRedis, JSON_UNESCAPED_UNICODE));
+
+        // === 8. Salva character session no Redis ===
         $statsArray = $character->stats ? $character->stats->toArray() : [];
         Redis::hmset("character_session:{$character->id}", [
-            'id'         => $character->id,
-            'user_id'    => $character->user_id,
-            'name'       => $character->name,
-            'stats'      => json_encode($statsArray, JSON_UNESCAPED_UNICODE),
+            'id'      => $character->id,
+            'user_id' => $character->user_id,
+            'name'    => $character->name,
+            'stats'   => json_encode($statsArray, JSON_UNESCAPED_UNICODE),
         ]);
 
         return $character;

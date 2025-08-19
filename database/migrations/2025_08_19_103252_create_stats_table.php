@@ -18,6 +18,10 @@ return new class extends Migration
             // Inteiros (sem casas decimais) - default 1
             $table->integer('hp')->default(100);
             $table->integer('level')->default(1);
+
+
+            // Stamina - default 50
+            $table->double('stamina')->default(50);
             $table->integer('strength')->default(1);
             $table->integer('intelligence')->default(1);
             $table->integer('vitality')->default(1);
@@ -31,8 +35,6 @@ return new class extends Migration
             $table->integer('luck_bonus')->default(1);
             $table->integer('wisdom_bonus')->default(1);
 
-            // Stamina - default 50
-            $table->double('stamina')->default(50);
 
             // Restante - default 0
             $table->double('nstatus_resistance')->default(0);
