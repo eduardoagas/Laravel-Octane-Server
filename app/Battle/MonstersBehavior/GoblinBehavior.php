@@ -39,7 +39,7 @@ class GoblinBehavior implements MonsterBehaviorInterface
 
         // Decide qual skill usar (50% Attack, 50% Wait)
         $chosenSkill = rand(1, 100) <= 50 ? $attackSkill : $waitSkill;
-        $targetType = ($chosenSkill['name'] === 'Attack') ? 'enemy' : 'self';
+        $targetType = (strtolower($chosenSkill['name']) === 'attack') ? 'enemy' : 'self';
 
         // Define target_id se for inimigo
         $targetId = null;

@@ -67,11 +67,12 @@ class BattleWithMonsterHandler
         $playerInstanceId = $currentPlayers + 1;
         $characterPayload['instanceId'] = (string)$playerInstanceId;
 
-        // 5️⃣ Registrar personagem na batalha
-        Redis::sadd("battle:$battleId:characters", (string)$characterId);
+        // 5️⃣ Registrar personagem na batalha (opcional: manter set por characterId também)
+        Redis::sadd("battle:$battleId:characters", (string)$characterId); // opcional: id do model
+        Redis::sadd("battle:$battleId:characters_instances", (string)$playerInstanceId); // instâncias
 
-        // grava um JSON da estrutura do personagem em characters_data
-        Redis::hset("battle:$battleId:characters_data", (string)$characterId, json_encode($characterPayload, JSON_UNESCAPED_UNICODE));
+        // grava um JSON da estrutura do personagem em characters_data usando instanceId <- CORREÇÃO
+        Redis::hset("battle:$battleId:characters_data", (string)$playerInstanceId, json_encode($characterPayload, JSON_UNESCAPED_UNICODE));
 
         // 6️⃣ Vincular battle_instance_id na sessão
         Redis::hset("session:$token", 'battle_instance_id', $battleId);
@@ -220,7 +221,7 @@ class BattleWithMonsterHandler
             } else {
                 // Se não tiver skills associadas, busca Attack e Wait do PostgreSQL pelo ID
                 $attackSkill = Skill::find(1); // substitua 1 pelo ID real da skill Attack
-                $waitSkill   = Skill::find(5); // substitua 5 pelo ID real da skill Wait
+                $waitSkill   = Skill::find(4); // substitua 5 pelo ID real da skill Wait
 
                 $skillsArray = array_filter([$attackSkill, $waitSkill]); // remove null caso não encontre
                 $skillsArray = array_map(fn($s) => $s->toArray(), $skillsArray);

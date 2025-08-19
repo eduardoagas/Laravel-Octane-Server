@@ -11,19 +11,20 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('soul_grid_soul', function (Blueprint $table) {
+        Schema::create('soul_skill', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('soul_grid_id')->constrained()->cascadeOnDelete();
             $table->foreignId('soul_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('skill_id')->constrained()->cascadeOnDelete();
             $table->timestamps();
         });
     }
+
 
     /**
      * Reverse the migrations.
      */
     public function down(): void
     {
-        //
+        Schema::dropIfExists('soul_skill');
     }
 };

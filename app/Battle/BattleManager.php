@@ -183,7 +183,13 @@ class BattleManager
             }
 
             // Checagem de stamina: se insuficiente, ignora ação
-            $staminaCost = SkillService::getSkillStaminaCost($action['skill_id']);
+            $staminaCost = SkillService::getSkillStaminaCost(
+                $action['skill_id'],
+                $battleId,
+                'monster',       // tipo do caster
+                (string) $monsterKey,  // casterId (id do monstro no Redis)
+
+            );
             $requiredStamina = $staminaCost ?? 0;
             if ($monsterCurrentStamina < $requiredStamina) {
                 Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) não tem stamina suficiente ({$monsterCurrentStamina} < {$requiredStamina}), ação descartada");
@@ -281,20 +287,22 @@ class BattleManager
             return ['processed' => false, 'needCheckBattleEnd' => false];
         }
 
-        foreach ($pendingActions as $characterId => $actionJson) {
+        foreach ($pendingActions as $instanceId => $actionJson) {
+            $instanceId = (string)$instanceId; // instanceId na batalha (não DB id)
             $action = json_decode($actionJson, true);
 
             // se o player não existe mais no contexto da batalha, remove a entry
-            if (!isset($players[$characterId])) {
-                Redis::hdel($pendingActionsKey, $characterId);
+            if (!isset($players[$instanceId])) {
+                // cleanup: remove pending action keyed por instanceId
+                Redis::hdel($pendingActionsKey, $instanceId);
                 continue;
             }
 
-            $caster = &$players[$characterId];
+            $caster = &$players[$instanceId];
 
             // LOG: ação recebida
             Log::channel('battle_debug')->info("[processPendingActions] Processing action", [
-                'characterId' => $characterId,
+                'instanceId' => $instanceId,
                 'caster' => $caster,
                 'action' => $action
             ]);
@@ -303,7 +311,7 @@ class BattleManager
 
             // LOG: targets resolvidos
             Log::channel('battle_debug')->info("[processPendingActions] Targets resolved", [
-                'characterId' => $characterId,
+                'instanceId' => $instanceId,
                 'targets' => $targets
             ]);
 
@@ -320,7 +328,7 @@ class BattleManager
 
                     Log::channel('battle_debug')->info("[processPendingActions] Executing action", [
                         'battleId' => $battleId,
-                        'casterId' => $characterId,
+                        'casterInstanceId' => $instanceId,
                         'skillId' => $skillId,
                         'targetKey' => $targetKey,
                         'targetId' => $targetId,
@@ -352,12 +360,12 @@ class BattleManager
 
                 $processed = true;
             } catch (\Exception $e) {
-                Log::error("[processPendingActions] Error processing action for player $characterId: " . $e->getMessage(), ['exception' => $e]);
+                Log::error("[processPendingActions] Error processing action for instance {$instanceId}: " . $e->getMessage(), ['exception' => $e]);
             }
 
-            // marca que terminou a execução e remove pending cache
-            Redis::del("battle:$battleId:skill_in_execution:$characterId");
-            Redis::hdel($pendingActionsKey, $characterId);
+            // marca que terminou a execução e remove pending cache — usa instanceId aqui
+            Redis::del("battle:$battleId:skill_in_execution:{$instanceId}");
+            Redis::hdel($pendingActionsKey, $instanceId);
         }
 
         return ['processed' => $processed, 'needCheckBattleEnd' => $needCheckBattleEnd];
@@ -560,53 +568,49 @@ class BattleManager
         $entries = Redis::hgetall($pendingKey);
 
         if (!$entries) {
-            // nada a processar
             return false;
         }
 
         $processedAny = false;
 
-        foreach ($entries as $characterId => $actionJson) {
-            $characterId = (string)$characterId;
+        foreach ($entries as $instanceId => $actionJson) {
+            $instanceId = (string)$instanceId; // instanceId
             $action = json_decode($actionJson, true);
 
             if (!is_array($action)) {
                 Log::warning("[processPendingSoulChanges] ação inválida ou JSON malformado", [
                     'battle' => $battleId,
-                    'character_id' => $characterId,
+                    'instanceId' => $instanceId,
                     'raw' => $actionJson,
                 ]);
-                // limpa entrada corrupta e o lock (safety)
-                Redis::hdel($pendingKey, $characterId);
-                Redis::del("battle:$battleId:soul_change_in_execution:$characterId");
+                Redis::hdel($pendingKey, $instanceId);
+                Redis::del("battle:$battleId:soul_change_in_execution:{$instanceId}");
                 continue;
             }
 
             $slotIndex = isset($action['slot_index']) ? (int)$action['slot_index'] : null;
-
             if ($slotIndex === null) {
                 Log::warning("[processPendingSoulChanges] slot_index ausente na ação", [
                     'battle' => $battleId,
-                    'character_id' => $characterId,
+                    'instanceId' => $instanceId,
                     'action' => $action,
                 ]);
-                Redis::hdel($pendingKey, $characterId);
-                Redis::del("battle:$battleId:soul_change_in_execution:$characterId");
+                Redis::hdel($pendingKey, $instanceId);
+                Redis::del("battle:$battleId:soul_change_in_execution:{$instanceId}");
                 continue;
             }
 
-            // Recupera grid equipado do Redis (pré-carregado no início da batalha)
-            $gridKey = "battle:$battleId:character:{$characterId}:equipped_soul_grid";
+            // Recupera grid equipado do Redis (pré-carregado no início da batalha) — usa instanceId
+            $gridKey = "battle:$battleId:character:{$instanceId}:equipped_soul_grid";
             $gridRaw = Redis::get($gridKey);
 
             if (!$gridRaw) {
                 Log::warning("[processPendingSoulChanges] equipped_soul_grid não encontrado no Redis", [
                     'battle' => $battleId,
-                    'character_id' => $characterId,
+                    'instanceId' => $instanceId,
                 ]);
-                // não há grid; remove pending e o lock para não travar
-                Redis::hdel($pendingKey, $characterId);
-                Redis::del("battle:$battleId:soul_change_in_execution:$characterId");
+                Redis::hdel($pendingKey, $instanceId);
+                Redis::del("battle:$battleId:soul_change_in_execution:{$instanceId}");
                 continue;
             }
 
@@ -615,12 +619,11 @@ class BattleManager
             if (!is_array($soulsArray) || !isset($soulsArray[$slotIndex])) {
                 Log::warning("[processPendingSoulChanges] slot inválido para equipped_soul_grid", [
                     'battle' => $battleId,
-                    'character_id' => $characterId,
+                    'instanceId' => $instanceId,
                     'slot_index' => $slotIndex,
                 ]);
-                // remove pending e lock - cliente provavelmente enviou slot errado
-                Redis::hdel($pendingKey, $characterId);
-                Redis::del("battle:$battleId:soul_change_in_execution:$characterId");
+                Redis::hdel($pendingKey, $instanceId);
+                Redis::del("battle:$battleId:soul_change_in_execution:{$instanceId}");
                 continue;
             }
 
@@ -634,39 +637,35 @@ class BattleManager
             try {
                 Redis::multi();
 
-                // atualiza soul ativa e skills
-                Redis::set("battle:$battleId:character:{$characterId}:active_soul_id", $activeSoul['id'] ?? null);
+                Redis::set("battle:$battleId:character:{$instanceId}:active_soul_id", $activeSoul['id'] ?? null);
                 Redis::set(
-                    "battle:$battleId:character:{$characterId}:skills",
+                    "battle:$battleId:character:{$instanceId}:skills",
                     json_encode($activeSkills, JSON_UNESCAPED_UNICODE)
                 );
 
-                // remove pending entry e libera lock
-                Redis::hdel($pendingKey, $characterId);
-                Redis::del("battle:$battleId:soul_change_in_execution:$characterId");
+                Redis::hdel($pendingKey, $instanceId);
+                Redis::del("battle:$battleId:soul_change_in_execution:{$instanceId}");
 
-                // aplica tudo
                 Redis::exec();
 
-                // marca last update da battle para que monitor/loop saiba que algo mudou
                 $this->updateLastUpdate($battleId);
 
                 Log::info("[processPendingSoulChanges] Soul change aplicado", [
                     'battle' => $battleId,
-                    'character_id' => $characterId,
+                    'instanceId' => $instanceId,
                     'slot_index' => $slotIndex,
                     'new_active_soul_id' => $activeSoul['id'] ?? null,
                     'skills_count' => count($activeSkills),
                 ]);
 
-                // 🔥 Broadcast da troca concluída
+                // Broadcast usando instanceId nas keys do players
                 try {
-                    $characterName = Redis::get("battle:$battleId:character:{$characterId}:name") ?? "Jogador $characterId";
+                    $characterName = Redis::get("battle:$battleId:character:{$instanceId}:name") ?? "Jogador {$instanceId}";
                     $soulName = $activeSoul['name'] ?? 'Soul desconhecida';
 
                     $updatePayload = [
                         'players' => [
-                            $characterId => [
+                            $instanceId => [
                                 'soulSlotIndex' => $slotIndex,
                             ]
                         ],
@@ -682,27 +681,25 @@ class BattleManager
                 } catch (\Throwable $e) {
                     Log::error("[processPendingSoulChanges] Erro ao enviar broadcast da troca de soul", [
                         'battle' => $battleId,
-                        'character_id' => $characterId,
+                        'instanceId' => $instanceId,
                         'error' => $e->getMessage(),
                     ]);
                 }
 
                 $processedAny = true;
             } catch (\Throwable $e) {
-                // tenta limpar multi/exec e restabelecer estado consistente
                 try {
                     Redis::discard();
                 } catch (\Throwable $_) {
                 }
                 Log::error("[processPendingSoulChanges] erro aplicando soul change", [
                     'battle' => $battleId,
-                    'character_id' => $characterId,
+                    'instanceId' => $instanceId,
                     'error' => $e->getMessage(),
                     'action' => $action,
                 ]);
-                // como fallback, remove pending e lock para não travar eternamente
-                Redis::hdel($pendingKey, $characterId);
-                Redis::del("battle:$battleId:soul_change_in_execution:$characterId");
+                Redis::hdel($pendingKey, $instanceId);
+                Redis::del("battle:$battleId:soul_change_in_execution:{$instanceId}");
             }
         }
 

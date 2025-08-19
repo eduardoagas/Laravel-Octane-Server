@@ -15,22 +15,34 @@ class SoulGrid extends Model
 
     public function replicateForCharacter(Character $character): SoulGrid
     {
-        // Cria nova instância da SoulGrid (baseada neste template)
+        // 1. Clonar grid template
         $newGrid = $this->replicate();
-        $newGrid->soul_grid_inventory_id = null; // não está no inventory
+        $newGrid->soul_grid_inventory_id = null;
         $newGrid->save();
 
-        // Associa ao character
+        // 2. Clonar stats da grid, se existir
+        if ($this->stats) {
+            $newStats = $this->stats->replicate();
+            $newStats->soul_grid_id = $newGrid->id;
+            $newStats->save();
+        }
+
+        // 3. Atualizar character
         $character->equipped_soul_grid_id = $newGrid->id;
         $character->save();
 
         return $newGrid;
     }
+
     public function character()
     {
         return $this->hasOne(Character::class, 'equipped_soul_grid_id');
     }
 
+    public function stats()
+    {
+        return $this->hasOne(Stats::class); // cada SoulGrid tem um conjunto de stats
+    }
     public function soulGridInventory()
     {
         return $this->belongsTo(SoulGridInventory::class, 'soul_grid_inventory_id');

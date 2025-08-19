@@ -26,9 +26,9 @@ class BattleActions
         try {
             // Garantir array de targets
             $targetsList = is_array($targets) && isset($targets[0]) ? $targets : [$targets];
-
+            $casterId = (string)$caster['instanceId'];
             $casterName = $caster['name'] ?? ($caster['username'] ?? 'Desconhecido');
-            $skillName = $skillService->getSkillName($skillId);
+            $skillName = $skillService::getSkillName($skillId, $battleId, $casterType, $casterId);
 
             $allResults = [];
             $staminaUpdates = [];
@@ -44,6 +44,12 @@ class BattleActions
                     'targetType' => $targetType,
                     'targetData' => $target,
                     'casterId' => $caster['instanceId'] ?? null
+                ]);
+
+                Log::info("[debug] characters_data lookup", [
+                    'key' => "battle:$battleId:characters_data",
+                    'targetKey' => $target['instanceId'],
+                    'exists' => Redis::hexists("battle:$battleId:characters_data", $target['instanceId'])
                 ]);
 
                 $result = $skillService->applySkill($caster, $target, $battleId, $skillId, $casterType, $targetType);

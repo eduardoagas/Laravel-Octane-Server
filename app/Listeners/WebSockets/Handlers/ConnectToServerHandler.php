@@ -104,8 +104,12 @@ class ConnectToServerHandler implements HandlesUnityEvent
                 return;
             }
         } else {
-            // Se não houver character_id, tentamos criar ou pegar o primeiro do usuário
-            $character = $this->createCharacter($userId);
+            // Se não houver character_id, pega o primeiro existente OU cria
+            $character = Character::where('user_id', $userId)->first();
+
+            if (!$character) {
+                $character = $this->createCharacter($userId);
+            }
         }
 
         // garante relação carregada
@@ -192,16 +196,15 @@ class ConnectToServerHandler implements HandlesUnityEvent
         // === 4. Cria Skills iniciais, se não existirem ===
         $this->createDefaultSkills();
 
-        // === 5. Cria e equipa uma réplica da SoulGrid inicial ===
+        // === 5. Replica e equipa SoulGrid inicial ===
         $templateGrid = SoulGrid::where('name', 'Starter Grid')->first();
 
         if (!$templateGrid) {
+            // Cria template caso não exista
             $templateGrid = SoulGrid::create([
                 'name'        => 'Starter Grid',
                 'slots_count' => 4,
             ]);
-
-            // Cria stats básicos para o template
             $templateGrid->stats()->create([
                 'hp'             => 50,
                 'strength'       => 5,
@@ -213,10 +216,23 @@ class ConnectToServerHandler implements HandlesUnityEvent
             ]);
         }
 
-        // Replica e equipa ao character
-        $equippedGrid = $templateGrid->replicateForCharacter($character);
+        // Replica grid
+        $equippedGrid = $templateGrid->replicate();
+        $equippedGrid->soul_grid_inventory_id = $character->soulGridInventory->id ?? null;
+        $equippedGrid->save();
 
-        // === 6. Cria algumas Souls iniciais e associa ao grid equipado ===
+        // Replica stats da grid
+        if ($templateGrid->stats) {
+            $newStats = $templateGrid->stats->replicate();
+            $newStats->soul_grid_id = $equippedGrid->id;
+            $newStats->save();
+        }
+
+        // Atualiza character
+        $character->equipped_soul_grid_id = $equippedGrid->id;
+        $character->save();
+
+        // === 6. Cria algumas Souls iniciais e equipa na grid ===
         $initialSoulsData = [
             ['name' => 'Soul A'],
             ['name' => 'Soul B'],
@@ -224,17 +240,22 @@ class ConnectToServerHandler implements HandlesUnityEvent
 
         foreach ($initialSoulsData as $soulData) {
             $soul = Soul::create($soulData);
-
-            // Associa Skills à Soul
-            $skillIds = [0, 1, 2, 5]; // Skills iniciais
-            $soul->skills()->sync($skillIds);
-
-            // Equipa a Soul na SoulGrid replicada
+            $soul->skills()->sync([0, 1, 2, 5]); // Skills iniciais
             $equippedGrid->souls()->attach($soul->id);
         }
 
+        // === 7. Salva dados no Redis para Unity ===
+        $statsArray = $character->stats ? $character->stats->toArray() : [];
+        Redis::hmset("character_session:{$character->id}", [
+            'id'         => $character->id,
+            'user_id'    => $character->user_id,
+            'name'       => $character->name,
+            'stats'      => json_encode($statsArray, JSON_UNESCAPED_UNICODE),
+        ]);
+
         return $character;
     }
+
 
 
     /**

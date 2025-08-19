@@ -94,4 +94,9 @@ class Stats extends Model
     {
         return $this->belongsTo(Monster::class);
     }
+
+    public function soulGrid()
+    {
+        return $this->belongsTo(SoulGrid::class);
+    }
 }
