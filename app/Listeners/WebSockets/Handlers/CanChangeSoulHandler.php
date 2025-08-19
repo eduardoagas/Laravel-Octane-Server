@@ -151,7 +151,7 @@ class CanChangeSoulHandler implements HandlesUnityEvent
         $connection->send(json_encode([
             'event' => 'soulChangeQueued',
             'data' => [
-                'slot_index' => (int)$slotIndex,
+                'slotIndex' => (int)$slotIndex,
             ]
         ]));
     }

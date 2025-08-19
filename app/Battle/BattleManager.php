@@ -663,19 +663,42 @@ class BattleManager
                     $characterName = Redis::get("battle:$battleId:character:{$instanceId}:name") ?? "Jogador {$instanceId}";
                     $soulName = $activeSoul['name'] ?? 'Soul desconhecida';
 
+                    $playersRaw = Redis::hgetall("battle:$battleId:characters_data");
+                    $playersPayload = [];
+
+                    foreach ($playersRaw as $pInstanceId => $pJson) {
+                        $pData = is_string($pJson) ? json_decode($pJson, true) : (array)$pJson;
+                        if (!is_array($pData)) $pData = [];
+
+                        // garante instanceId
+                        $pData['instanceId'] = (string)($pData['instanceId'] ?? $pInstanceId);
+
+                        // tenta extrair current_hp de forma segura (stats pode vir string ou array)
+                        $stats = $pData['stats'] ?? null;
+                        if (is_string($stats)) {
+                            $stats = json_decode($stats, true) ?: null;
+                        }
+                        $currentHp = isset($stats['current_hp']) ? (int)$stats['current_hp'] : 0;
+
+                        $playersPayload[] = [
+                            'instanceId'    => (string) $pData['instanceId'],
+                            'soulSlotIndex' => isset($pData['soulSlotIndex']) ? (int)$pData['soulSlotIndex'] : -1,
+
+                        ];
+                    }
+
                     $updatePayload = [
-                        'players' => [
-                            $instanceId => [
-                                'soulSlotIndex' => $slotIndex,
-                            ]
-                        ],
-                        'enemies' => [],
+                        'players' => $playersPayload,
+                        'enemies' => [], // ou montar monsters de forma similar se quiser
                         'general' => [
-                            'actionInfoUse' => "$characterName trocou de Soul",
+                            'actionInfoUse'    => "$characterName trocou de Soul",
                             'actionInfoResult' => "Nova Soul ativa: $soulName",
-                            'globalMessages' => ["$characterName agora está usando $soulName"],
+                            'globalMessages'   => ["$characterName agora está usando $soulName"],
                         ],
                     ];
+
+                    // loga o JSON para verificar formato antes do broadcast
+                    Log::debug('[processPendingSoulChanges] updatePayload JSON: ' . json_encode($updatePayload, JSON_UNESCAPED_UNICODE));
 
                     BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
                 } catch (\Throwable $e) {
