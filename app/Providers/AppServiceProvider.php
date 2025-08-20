@@ -39,6 +39,17 @@ class AppServiceProvider extends ServiceProvider
             }
         }, 0.3);
 
+        // === Processa buffs e debuffs, ticks de 1 segundo ===
+        Octane::tick('battle-effects-ticker', function () use ($battleManager) {
+            $battleIds = $battleManager->getActiveBattles();
+            foreach ($battleIds as $battleId) {
+                $processed = $battleManager->processBattleEffects($battleId);
+                if ($processed) {
+                    \Illuminate\Support\Facades\Log::info("[BattleMonstersTicker] Processed effects for battle $battleId");
+                }
+            }
+        }, 1.0);
+
         // === Limpa batalhas antigas a cada 10 segundos ===
         /*Octane::tick('battle-cleanup-ticker', function () use ($battleManager) {
             $battleManager->cleanupOldBattles(3600);

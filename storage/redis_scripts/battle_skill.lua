@@ -1,11 +1,15 @@
 -- KEYS[1] = battle:<id>:characters_data
 -- KEYS[2] = battle:<id>:monsters
--- ARGV[1] = skillType ("physical", "magical", "heal", "buff", "debuff")
+-- ARGV[1] = skillType ("physical", "magical", "heal", "buff", "debuff", "revive")
 -- ARGV[2] = casterId
 -- ARGV[3] = targetId
 -- ARGV[4] = skillPower / bonus (opcional, default 0)
 -- ARGV[5] = stat (apenas para buff/debuff, opcional, default "")
 -- ARGV[6] = duration (apenas para buff/debuff, opcional, default 0)
+-- ARGV[7] = level (opcional, default 1)
+-- ARGV[8] = casterType (character ou monster)  -- NOVO: passado pelo PHP para que possamos salvar junto no Redis
+-- ARGV[9] = tickSkillId
+
 local skillType = ARGV[1] or ""
 local casterId = ARGV[2] or ""
 local targetId = ARGV[3] or ""
@@ -13,6 +17,8 @@ local power = tonumber(ARGV[4]) or 0
 local stat = ARGV[5] or ""
 local duration = tonumber(ARGV[6]) or 0
 local level = tonumber(ARGV[7]) or 1
+local casterType = ARGV[8] or "" -- NOVO: tipo de quem aplicou a skill (usaremos ao armazenar debuffs/buffs)
+local tickSkillId = tonumber(ARGV[9]) or nil
 
 -- Função para buscar target em qualquer hash
 local function hget_any(keys, field)
@@ -67,6 +73,85 @@ local function get_defense(stats_table, skillType)
     end
 end
 
+-- Função reutilizável para aplicar debuff
+-- ALTERAÇÃO: agora recebe casterType para armazenar junto no Redis (caster_type).
+local function apply_debuff(casterId, casterType, targetId, targetKey, stat, power, duration, level)
+    if stat == nil or stat == "" then
+        return
+    end
+
+    local function findCaster(cId)
+        local raw, _ = hget_any(keys, cId)
+        if not raw then
+            return nil
+        end
+        return cjson.decode(raw)
+    end
+
+    local casterEntity = findCaster(casterId)
+    local casterStats = casterEntity and casterEntity['stats'] or {}
+    local caster_luk = math.max(1, tonumber(read_stat(casterStats, 'luck')) or 0)
+    local target_vit = math.max(1, tonumber(read_stat(stats, 'vitality', 'vit')) or 0)
+
+    local debuff_strength
+    if level == 2 then
+        debuff_strength = "medium"
+    elseif level == 3 then
+        debuff_strength = "strong"
+    else
+        debuff_strength = "weak"
+    end
+
+    local stat_chance = caster_luk / (caster_luk + target_vit)
+    local base_chances = { weak = 0.10, medium = 0.20, strong = 0.50 }
+    local min_chances = { weak = 0.00, medium = 0.01, strong = 0.10 }
+    local chance = base_chances[debuff_strength] * stat_chance
+    chance = math.max(min_chances[debuff_strength], math.min(0.99, chance))
+
+    local roll = nano_random()
+    if roll < chance then
+        -- NOTE: inclui caster_type no objeto salvo (ALTERAÇÃO)
+        local debuff = {
+            caster_id = casterId,
+            caster_type = casterType,         -- NOVO: armazena a origem (character/monster)
+            stat = stat,
+            power = math.floor(power),
+            duration = math.floor(duration),
+            applied_at = redis.call('TIME')[1],
+            skill_id = tickSkillId
+        }
+        local field = tostring(targetId) .. ":" .. debuff['stat'] .. ":" .. tostring(casterId)
+        redis.call('HSET', targetKey .. ":debuffs", field, cjson.encode(debuff))
+        statuses[debuff['stat']] = {
+            caster_id = casterId,
+            caster_type = casterType,       -- NOVO: também refletido em statuses locais
+            power = debuff['power'],
+            duration = debuff['duration'],
+            applied_at = debuff['applied_at']
+        }
+
+        -- Caso especial: debuff de morte instantânea
+        if debuff['stat'] == 'death' and (stats['current_hp'] or 0) > 0 then
+            stats['current_hp'] = 0
+            someoneDied = true
+            statuses['death'] = {
+                caster_id = casterId,
+                caster_type = casterType,   -- NOVO: registra tipo do caster que causou a morte
+                applied_at = debuff['applied_at']
+            }
+        end
+
+        result['debuff_applied'] = debuff
+        result['debuff_chance'] = chance
+        result['debuff_roll'] = roll
+    else
+        result['debuff_applied'] = nil
+        result['debuff_failed'] = true
+        result['debuff_chance'] = chance
+        result['debuff_roll'] = roll
+    end
+end
+
 -- DANO FÍSICO / MÁGICO
 if skillType == "physical" or skillType == "magical" then
     local defense = get_defense(stats, skillType)
@@ -86,104 +171,52 @@ if skillType == "physical" or skillType == "magical" then
         statuses['death'] = nil
     end
 
-    -- HEAL
+    -- Aplica debuff caso skill de dano tenha stat definido
+    -- ALTERAÇÃO: passa casterType para que o debuff salvo contenha caster_type
+    apply_debuff(casterId, casterType, targetId, targetKey, stat, power, duration, level)
+
+-- HEAL
 elseif skillType == "heal" then
     local maxHp = tonumber(stats['hp'] or 100)
     local currentHp = tonumber(stats['current_hp'] or 0)
-    local newHp = math.min(maxHp, currentHp + math.floor(power))
-    stats['current_hp'] = math.floor(newHp)
-    result['healed_amount'] = math.floor(newHp - currentHp)
-    if newHp > 0 then
-        statuses['death'] = nil
+    if currentHp > 0 then
+        local newHp = math.min(maxHp, currentHp + math.floor(power))
+        stats['current_hp'] = math.floor(newHp)
+        result['healed_amount'] = math.floor(power)
     end
 
-    -- BUFF
+-- REVIVE
+elseif skillType == "revive" then
+    local currentHp = tonumber(stats['current_hp'] or 0)
+    if currentHp == 0 then
+        local maxHp = tonumber(stats['hp'] or 100)
+        local newHp = math.min(maxHp, currentHp + math.floor(power))
+        statuses['death'] = nil
+        stats['current_hp'] = math.floor(newHp)
+        result['healed_amount'] = math.floor(power)
+        result['revive_applied'] = true
+    end
+
+-- BUFF
 elseif skillType == "buff" then
+    -- ALTERAÇÃO: inclui caster_type no objeto de buff salvo
     local buff = {
         caster_id = casterId,
+        caster_type = casterType,       -- NOVO: registra origem do buff
         stat = stat ~= "" and stat or "unknown",
         bonus = math.floor(power),
         duration = math.floor(duration),
-        applied_at = redis.call('TIME')[1]
+        applied_at = redis.call('TIME')[1],
+        skill_id = tickSkillId
     }
+    -- guardamos pelo campo casterId (mantendo compatibilidade com anterior), mas o JSON agora tem caster_type
     redis.call('HSET', targetKey .. ":buffs", casterId, cjson.encode(buff))
     result['buff_applied'] = buff
 
-    -- DEBUFF
+-- DEBUFF PURO
 elseif skillType == "debuff" then
-    local function findCaster(cId)
-        local raw, _ = hget_any(keys, cId)
-        if not raw then
-            return nil
-        end
-        return cjson.decode(raw)
-    end
-    local casterEntity = findCaster(casterId)
-    local casterStats = casterEntity and casterEntity['stats'] or {}
-    local caster_luk = math.max(1, tonumber(read_stat(casterStats, 'luck')) or 0)
-    local target_vit = math.max(1, tonumber(read_stat(stats, 'vitality', 'vit')) or 0)
-
-    local debuff_strength
-    if level == 2 then
-        debuff_strength = "medium"
-    elseif level == 3 then
-        debuff_strength = "strong"
-    else
-        debuff_strength = "weak"
-    end
-
-    local stat_chance = caster_luk / (caster_luk + target_vit)
-    local base_chances = {
-        weak = 0.10,
-        medium = 0.20,
-        strong = 0.50
-    }
-    local min_chances = {
-        weak = 0.00,
-        medium = 0.01,
-        strong = 0.10
-    }
-    local chance = base_chances[debuff_strength] * stat_chance
-    chance = math.max(min_chances[debuff_strength], math.min(0.99, chance))
-
-    local roll = nano_random()
-    if roll < chance then
-        local debuff = {
-            caster_id = casterId,
-            stat = stat ~= "" and stat or "unknown",
-            power = math.floor(power),
-            duration = math.floor(duration),
-            applied_at = redis.call('TIME')[1]
-        }
-        local field = tostring(targetId) .. ":" .. debuff['stat'] .. ":" .. tostring(casterId)
-        redis.call('HSET', targetKey .. ":debuffs", field, cjson.encode(debuff))
-        statuses[debuff['stat']] = {
-            caster_id = casterId,
-            power = debuff['power'],
-            duration = debuff['duration'],
-            applied_at = debuff['applied_at']
-        }
-
-        -- Caso especial: debuff de morte instantânea
-        if debuff['stat'] == 'death' and (stats['current_hp'] or 0) > 0 then
-            stats['current_hp'] = 0
-            someoneDied = true
-            statuses['death'] = {
-                caster_id = casterId,
-                duration = debuff['duration'],
-                applied_at = debuff['applied_at']
-            }
-        end
-
-        result['debuff_applied'] = debuff
-        result['debuff_chance'] = chance
-        result['debuff_roll'] = roll
-    else
-        result['debuff_applied'] = nil
-        result['debuff_failed'] = true
-        result['debuff_chance'] = chance
-        result['debuff_roll'] = roll
-    end
+    -- ALTERAÇÃO: passa casterType para persistir caster_type no Redis
+    apply_debuff(casterId, casterType, targetId, targetKey, stat, power, duration, level)
 
 else
     return cjson.encode({

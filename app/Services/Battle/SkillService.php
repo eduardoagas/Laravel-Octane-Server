@@ -122,32 +122,35 @@ class SkillService
         $casterStats = $caster['stats'] ?? [];
         if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
 
-        // Cooldown global apenas para jogadores
-        if ($casterType === 'character') {
-            $this->checkCooldown($battleId, $casterId, $skill['post_delay'] ?? 0);
-        }
+        $isTickSkill = $skillData['tick_skill'] ?? false;
+        if (!$isTickSkill) {
+            // Cooldown global apenas para jogadores
+            if ($casterType === 'character') {
+                $this->checkCooldown($battleId, $casterId, $skill['post_delay'] ?? 0);
+            }
 
-        // Verifica stamina (leitura inicial)
-        $currentStamina = $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType);
-        $requiredStamina = (int)($skill['stamina_cost'] ?? 0);
-        if ($currentStamina < $requiredStamina) {
-            throw new InsufficientStaminaException(
-                "Stamina insuficiente ({$currentStamina} / {$requiredStamina})"
+            // Verifica stamina (leitura inicial)
+            $currentStamina = $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType);
+            $requiredStamina = (int)($skill['stamina_cost'] ?? 0);
+            if ($currentStamina < $requiredStamina) {
+                throw new InsufficientStaminaException(
+                    "Stamina insuficiente ({$currentStamina} / {$requiredStamina})"
+                );
+            }
+
+            // Consome stamina (operação atômica via StaminaService)
+            $currentAfterConsumption = $this->staminaService->consumeStamina(
+                $battleId,
+                $casterId,
+                $requiredStamina,
+                $casterType
             );
-        }
 
-        // Consome stamina (operação atômica via StaminaService)
-        $currentAfterConsumption = $this->staminaService->consumeStamina(
-            $battleId,
-            $casterId,
-            $requiredStamina,
-            $casterType
-        );
-
-        if ($currentAfterConsumption === null) {
-            throw new InsufficientStaminaException(
-                "Stamina insuficiente (race condition detectada ao tentar consumir)"
-            );
+            if ($currentAfterConsumption === null) {
+                throw new InsufficientStaminaException(
+                    "Stamina insuficiente (race condition detectada ao tentar consumir)"
+                );
+            }
         }
 
         if (!$target) {
@@ -190,7 +193,9 @@ class SkillService
             $power,
             $skill['stat'] ?? '',
             $skill['duration'] ?? 0,
-            $skill['level']
+            $skill['level'],
+            $casterType,
+            $skill['tick_skill_id'] ?? null  // ✅ Adiciona o tick_skill_id aqui
         );
 
         $result = json_decode($resultJson, true);
