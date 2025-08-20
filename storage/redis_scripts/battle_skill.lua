@@ -9,7 +9,6 @@
 -- ARGV[7] = level (opcional, default 1)
 -- ARGV[8] = casterType (character ou monster)  -- NOVO: passado pelo PHP para que possamos salvar junto no Redis
 -- ARGV[9] = tickSkillId
-
 local skillType = ARGV[1] or ""
 local casterId = ARGV[2] or ""
 local targetId = ARGV[3] or ""
@@ -103,8 +102,16 @@ local function apply_debuff(casterId, casterType, targetId, targetKey, stat, pow
     end
 
     local stat_chance = caster_luk / (caster_luk + target_vit)
-    local base_chances = { weak = 0.10, medium = 0.20, strong = 0.50 }
-    local min_chances = { weak = 0.00, medium = 0.01, strong = 0.10 }
+    local base_chances = {
+        weak = 0.10,
+        medium = 0.20,
+        strong = 0.50
+    }
+    local min_chances = {
+        weak = 0.00,
+        medium = 0.01,
+        strong = 0.10
+    }
     local chance = base_chances[debuff_strength] * stat_chance
     chance = math.max(min_chances[debuff_strength], math.min(0.99, chance))
 
@@ -113,7 +120,7 @@ local function apply_debuff(casterId, casterType, targetId, targetKey, stat, pow
         -- NOTE: inclui caster_type no objeto salvo (ALTERAÇÃO)
         local debuff = {
             caster_id = casterId,
-            caster_type = casterType,         -- NOVO: armazena a origem (character/monster)
+            caster_type = casterType, -- NOVO: armazena a origem (character/monster)
             stat = stat,
             power = math.floor(power),
             duration = math.floor(duration),
@@ -124,7 +131,7 @@ local function apply_debuff(casterId, casterType, targetId, targetKey, stat, pow
         redis.call('HSET', targetKey .. ":debuffs", field, cjson.encode(debuff))
         statuses[debuff['stat']] = {
             caster_id = casterId,
-            caster_type = casterType,       -- NOVO: também refletido em statuses locais
+            caster_type = casterType, -- NOVO: também refletido em statuses locais
             power = debuff['power'],
             duration = debuff['duration'],
             applied_at = debuff['applied_at']
@@ -136,7 +143,7 @@ local function apply_debuff(casterId, casterType, targetId, targetKey, stat, pow
             someoneDied = true
             statuses['death'] = {
                 caster_id = casterId,
-                caster_type = casterType,   -- NOVO: registra tipo do caster que causou a morte
+                caster_type = casterType, -- NOVO: registra tipo do caster que causou a morte
                 applied_at = debuff['applied_at']
             }
         end
@@ -175,7 +182,38 @@ if skillType == "physical" or skillType == "magical" then
     -- ALTERAÇÃO: passa casterType para que o debuff salvo contenha caster_type
     apply_debuff(casterId, casterType, targetId, targetKey, stat, power, duration, level)
 
--- HEAL
+    -- DAMAGE PERCENTUAL
+elseif skillType == "percentageDamage" or skillType == "purePercentageDamage" then
+    local maxHp = tonumber(stats['hp'] or 100)
+    local currentHp = tonumber(stats['current_hp'] or 0)
+    local damage = 0
+
+    if skillType == "percentageDamage" then
+        damage = math.floor(currentHp * (power / 100))
+    else -- purePercentageDamage
+        damage = math.floor(maxHp * (power / 100))
+    end
+
+    damage = math.max(0, damage)
+    local newHp = math.max(0, currentHp - damage)
+    stats['current_hp'] = math.floor(newHp)
+    result['damage_dealt'] = damage
+
+    if newHp <= 0 and not statuses['death'] then
+        someoneDied = true
+        statuses['death'] = {
+            caster_id = casterId,
+            caster_type = casterType,
+            applied_at = redis.call('TIME')[1]
+        }
+    elseif newHp > 0 then
+        statuses['death'] = nil
+    end
+
+    -- aplica debuff caso skill tenha stat definido (ex: PoisonTick)
+    apply_debuff(casterId, casterType, targetId, targetKey, stat, power, duration, level)
+
+    -- HEAL
 elseif skillType == "heal" then
     local maxHp = tonumber(stats['hp'] or 100)
     local currentHp = tonumber(stats['current_hp'] or 0)
@@ -185,7 +223,7 @@ elseif skillType == "heal" then
         result['healed_amount'] = math.floor(power)
     end
 
--- REVIVE
+    -- REVIVE
 elseif skillType == "revive" then
     local currentHp = tonumber(stats['current_hp'] or 0)
     if currentHp == 0 then
@@ -197,12 +235,12 @@ elseif skillType == "revive" then
         result['revive_applied'] = true
     end
 
--- BUFF
+    -- BUFF
 elseif skillType == "buff" then
     -- ALTERAÇÃO: inclui caster_type no objeto de buff salvo
     local buff = {
         caster_id = casterId,
-        caster_type = casterType,       -- NOVO: registra origem do buff
+        caster_type = casterType, -- NOVO: registra origem do buff
         stat = stat ~= "" and stat or "unknown",
         bonus = math.floor(power),
         duration = math.floor(duration),
@@ -213,7 +251,7 @@ elseif skillType == "buff" then
     redis.call('HSET', targetKey .. ":buffs", casterId, cjson.encode(buff))
     result['buff_applied'] = buff
 
--- DEBUFF PURO
+    -- DEBUFF PURO
 elseif skillType == "debuff" then
     -- ALTERAÇÃO: passa casterType para persistir caster_type no Redis
     apply_debuff(casterId, casterType, targetId, targetKey, stat, power, duration, level)

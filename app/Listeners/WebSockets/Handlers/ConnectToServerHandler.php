@@ -76,7 +76,30 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'pre_delay' => 300,
             'post_delay' => 500,
             'level' => 1,
-        ]
+        ],
+        6 => [ // ✅ Poison skill inicial
+            'name' => 'Poison',
+            'type' => 'debuff',
+            'stat' => 'poison',
+            'power' => 10,
+            'duration' => 3,
+            'stamina_cost' => 12,
+            'pre_delay' => 300,
+            'post_delay' => 500,
+            'level' => 1,
+            'tick_skill_id' => 7, // referencia para o tick
+        ],
+        7 => [ // ✅ PoisonTick
+            'name' => 'PoisonTick',
+            'type' => 'debuff',
+            'stat' => 'poison',
+            'power' => 10,
+            'duration' => 1,
+            'stamina_cost' => 0,
+            'pre_delay' => 0,
+            'post_delay' => 0,
+            'level' => 1,
+        ],
     ];
 
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
