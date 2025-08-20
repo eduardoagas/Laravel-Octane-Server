@@ -130,7 +130,7 @@ class BattleManager
             Redis::hset($debuffsKey, $field, json_encode($data, JSON_UNESCAPED_UNICODE));
 
             // se houver skill_id, processa tick interval
-            $skillId = isset($data['skill_id']) ? (int)$data['skill_id'] : null;
+            $skillId = isset($data['tick_skill_id']) ? (int)$data['tick_skill_id'] : null;
             $interval = isset($data['tick_interval']) ? (int)$data['tick_interval'] : (isset($data['interval']) ? (int)$data['interval'] : 1);
 
             if ($skillId) {
@@ -192,20 +192,22 @@ class BattleManager
                 continue;
             }
 
-            $data['duration'] = (int)($data['duration'] ?? 0) - 1;
+            if ($data['duration'] !== null) {
+                $data['duration'] = (int)$data['duration'] - 1;
 
-            if ($data['duration'] <= 0) {
-                Redis::hdel($buffsKey, $field);
-                Redis::del("{$baseKey}:buff_tick:{$field}");
-                Log::info("[BattleEffects] Removed expired buff {$field} from {$entityType} {$instanceId} in battle {$battleId}");
-                continue;
+                if ($data['duration'] <= 0) {
+                    Redis::hdel($buffsKey, $field);
+                    Redis::del("{$baseKey}:buff_tick:{$field}");
+                    Log::info("[BattleEffects] Removed expired buff {$field} from {$entityType} {$instanceId} in battle {$battleId}");
+                    continue;
+                }
             }
 
             // persiste nova duração
             Redis::hset($buffsKey, $field, json_encode($data, JSON_UNESCAPED_UNICODE));
 
             // se houver skill_id (buff que gera tick effects), processa
-            $skillId = isset($data['skill_id']) ? (int)$data['skill_id'] : null;
+            $skillId = isset($data['tick_skill_id']) ? (int)$data['tick_skill_id'] : null;
             $interval = isset($data['tick_interval']) ? (int)$data['tick_interval'] : (isset($data['interval']) ? (int)$data['interval'] : 1);
 
             if ($skillId) {

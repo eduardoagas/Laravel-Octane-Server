@@ -16,7 +16,7 @@ class Skill extends Model
         'level',
         'stat',
         'duration',
-        'interval',
+        'tick_interval',
         'tick_skill_id',
     ];
 

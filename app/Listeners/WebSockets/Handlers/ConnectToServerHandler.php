@@ -79,12 +79,13 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'name' => 'Poison',
             'type' => 'debuff',
             'stat' => 'poison',
-            'power' => 10,
-            'duration' => 3,
+            'power' => 0,
+            'duration' => null, //permanente
             'stamina_cost' => 12,
             'pre_delay' => 300,
             'post_delay' => 500,
             'level' => 1,
+            'tick_interval' => 5,
             'tick_skill_id' => 7, // referencia para o tick
         ],
         7 => [ // ✅ PoisonTick
@@ -236,18 +237,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
             ]);
         }
 
-        $equippedGrid = $templateGrid->replicate();
-        $equippedGrid->soul_grid_inventory_id = $character->soulGridInventory->id ?? null;
-        $equippedGrid->save();
-
-        if ($templateGrid->stats) {
-            $newStats = $templateGrid->stats->replicate();
-            $newStats->soul_grid_id = $equippedGrid->id;
-            $newStats->save();
-        }
-
-        $character->equipped_soul_grid_id = $equippedGrid->id;
-        $character->save();
+        $equippedGrid = $templateGrid->replicateForCharacter($character);
 
         // === 6. Cria algumas Souls iniciais e equipa na grid ===
         $initialSoulsData = [
@@ -272,7 +262,9 @@ class ConnectToServerHandler implements HandlesUnityEvent
                 'post_delay'  => $skill->post_delay ?? 0,
                 'duration' => $skill->duration ?? 0,
                 'level' => $skill->level ?? 1,
-                'stat' => $skill->stat
+                'stat' => $skill->stat,
+                'tick_interval' => $skill->interval,
+                'tick_skill_id' => $skill->tick_skill_id,
             ])->toArray();
 
             $soulsForRedis[] = [

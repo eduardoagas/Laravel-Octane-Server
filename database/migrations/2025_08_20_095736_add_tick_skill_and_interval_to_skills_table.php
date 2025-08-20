@@ -9,7 +9,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('skills', function (Blueprint $table) {
-            $table->integer('interval')->nullable()->after('tick_skill');
+            $table->integer('tick_interval')->nullable()->after('tick_skill');
              $table->foreign('tick_skill_id')->references('id')->on('skills')->onDelete('set null');
         });
     }

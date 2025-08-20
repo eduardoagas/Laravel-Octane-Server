@@ -125,7 +125,8 @@ local function apply_debuff(casterId, casterType, targetId, targetKey, stat, pow
             power = math.floor(power),
             duration = math.floor(duration),
             applied_at = redis.call('TIME')[1],
-            skill_id = tickSkillId
+tick_skill_id = tickSkillId
+
         }
         local field = tostring(targetId) .. ":" .. debuff['stat'] .. ":" .. tostring(casterId)
         redis.call('HSET', targetKey .. ":debuffs", field, cjson.encode(debuff))
@@ -245,7 +246,8 @@ elseif skillType == "buff" then
         bonus = math.floor(power),
         duration = math.floor(duration),
         applied_at = redis.call('TIME')[1],
-        skill_id = tickSkillId
+tick_skill_id = tickSkillId
+
     }
     -- guardamos pelo campo casterId (mantendo compatibilidade com anterior), mas o JSON agora tem caster_type
     redis.call('HSET', targetKey .. ":buffs", casterId, cjson.encode(buff))
