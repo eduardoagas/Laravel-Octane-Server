@@ -13,7 +13,6 @@ class CanUseSkillHandler implements HandlesUnityEvent
 {
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
     {
-        Log::info("CANUSE SKILL TRIGGERED");
         $data = $payload['data'] ?? [];
         $skillIndex = $data['skill_id'] ?? null; // índice no array de skills do Redis
         $targetType = $data['target_type'] ?? null; // 'enemy' ou 'player'

@@ -46,10 +46,31 @@ local statuses = stats['statuses']
 local someoneDied = false
 local result = {}
 
--- Função para gerar aleatório baseado em microsegundos
+-- contador por alvo para produzir variação entre execuções muito rápidas
+local _rand_counter_key = targetKey .. ":rand_counter"
+
 local function nano_random()
-    local micros = tonumber(redis.call('TIME')[2] or 0)
-    return (micros % 1000000) / 1000000.0
+    -- pega tempo atual
+    local t = redis.call('TIME')
+    local secs = tonumber(t[1]) or 0
+    local micros = tonumber(t[2]) or 0
+
+    -- incrementa contador e garante expiração curta para não encher o Redis
+    local inc = tonumber(redis.call('INCR', _rand_counter_key) or 0)
+    if inc == 1 then
+        redis.call('EXPIRE', _rand_counter_key, 60) -- expira em 60s
+    end
+
+    -- mistura micros + contador para criar seed única
+    local seed = secs * 1000000 + ((micros + inc) % 1000000)
+    math.randomseed(seed)
+
+    -- aquecimento curto para evitar bias em alguns motores Lua
+    math.random();
+    math.random()
+
+    -- retorna float em (0,1)
+    return math.random()
 end
 
 -- Função utilitária para ler stats
@@ -125,7 +146,7 @@ local function apply_debuff(casterId, casterType, targetId, targetKey, stat, pow
             power = math.floor(power),
             duration = math.floor(duration),
             applied_at = redis.call('TIME')[1],
-tick_skill_id = tickSkillId
+            tick_skill_id = tickSkillId
 
         }
         local field = tostring(targetId) .. ":" .. debuff['stat'] .. ":" .. tostring(casterId)
@@ -246,7 +267,7 @@ elseif skillType == "buff" then
         bonus = math.floor(power),
         duration = math.floor(duration),
         applied_at = redis.call('TIME')[1],
-tick_skill_id = tickSkillId
+        tick_skill_id = tickSkillId
 
     }
     -- guardamos pelo campo casterId (mantendo compatibilidade com anterior), mas o JSON agora tem caster_type

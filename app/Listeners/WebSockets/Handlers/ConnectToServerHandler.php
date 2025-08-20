@@ -94,7 +94,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'stamina_cost' => 12,
             'pre_delay' => 300,
             'post_delay' => 500,
-            'level' => 1,
+            'level' => 3,
             'tick_interval' => 5,
             'tick_skill_id' => 6, // referencia para o tick
         ]
@@ -242,7 +242,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
             // === 6. Cria algumas Souls iniciais e equipa na grid ===
             $initialSoulsData = [
                 ['name' => 'Soul A', 'skills' => [1, 2, 3, 5]],
-                ['name' => 'Soul B', 'skills' => [5, 7, 3, 1]],
+                ['name' => 'Soul B', 'skills' => [5, 2, 3, 7]],
             ];
 
             $soulsForRedis = [];
