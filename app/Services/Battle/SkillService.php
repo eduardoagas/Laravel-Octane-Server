@@ -122,7 +122,7 @@ class SkillService
         $casterStats = $caster['stats'] ?? [];
         if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
 
-        $isTickSkill = $skillData['tick_skill'] ?? false;
+        $isTickSkill = !is_null($skill['tick_skill_id']);
         if (!$isTickSkill) {
             // Cooldown global apenas para jogadores
             if ($casterType === 'character') {

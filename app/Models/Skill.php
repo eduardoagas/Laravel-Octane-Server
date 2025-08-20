@@ -18,7 +18,7 @@ class Skill extends Model
         'bonus',
         'duration',
         'interval',
-        'tick_skill',
+        'tick_skill_id',
     ];
 
     public function souls()
