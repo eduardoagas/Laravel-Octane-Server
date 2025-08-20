@@ -8,8 +8,7 @@ use App\Models\Character;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Laravel\Reverb\Contracts\Connection;
-use App\Models\SoulGridInventory;   // novo
-use App\Models\SoulInventory;       // novo
+use Illuminate\Support\Facades\DB;
 use App\Listeners\WebSockets\Contracts\HandlesUnityEvent;
 
 class ConnectToServerHandler implements HandlesUnityEvent
@@ -75,20 +74,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'post_delay' => 500,
             'level' => 1,
         ],
-        6 => [ // ✅ Poison skill inicial
-            'name' => 'Poison',
-            'type' => 'debuff',
-            'stat' => 'poison',
-            'power' => 0,
-            'duration' => null, //permanente
-            'stamina_cost' => 12,
-            'pre_delay' => 300,
-            'post_delay' => 500,
-            'level' => 1,
-            'tick_interval' => 5,
-            'tick_skill_id' => 7, // referencia para o tick
-        ],
-        7 => [ // ✅ PoisonTick
+        6 => [ // ✅ PoisonTick
             'name' => 'PoisonTick',
             'type' => 'debuff',
             'stat' => 'poison',
@@ -99,6 +85,19 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'post_delay' => 0,
             'level' => 1,
         ],
+        7 => [ // ✅ Poison skill inicial
+            'name' => 'Poison',
+            'type' => 'debuff',
+            'stat' => 'poison',
+            'power' => 0,
+            'duration' => null, //permanente
+            'stamina_cost' => 12,
+            'pre_delay' => 300,
+            'post_delay' => 500,
+            'level' => 1,
+            'tick_interval' => 5,
+            'tick_skill_id' => 6, // referencia para o tick
+        ]
     ];
 
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
@@ -192,102 +191,104 @@ class ConnectToServerHandler implements HandlesUnityEvent
      */
     private function createCharacter(int $userId): Character
     {
-        Log::info("NOVO PERSONAGEM CRIADO");
+        return DB::transaction(function () use ($userId) {
+            Log::info("NOVO PERSONAGEM CRIADO");
 
-        // === 1. Cria o character ===
-        $character = Character::create([
-            'user_id' => $userId,
-            'name'    => "Hero_{$userId}",
-        ]);
-
-        // === 2. Cria stats iniciais ===
-        $character->stats()->create([
-            'hp'             => 1000,
-            'level'          => 1,
-            'strength'       => 10,
-            'intelligence'   => 5,
-            'defense_bonus'  => 8,
-            'mdefense_bonus' => 8,
-            'dexterity'      => 7,
-            'stamina'        => 12,
-        ]);
-
-        // === 3. Cria inventários vazios ===
-        $character->soulInventory()->create();
-        $character->soulGridInventory()->create();
-
-        // === 4. Cria Skills iniciais no DB, se não existirem ===
-        $this->createDefaultSkills();
-
-        // === 5. Replica e equipa SoulGrid inicial ===
-        $templateGrid = SoulGrid::where('name', 'Starter Grid')->first();
-        if (!$templateGrid) {
-            $templateGrid = SoulGrid::create([
-                'name'        => 'Starter Grid',
-                'slots_count' => 4,
+            // === 1. Cria o character ===
+            $character = Character::create([
+                'user_id' => $userId,
+                'name'    => "Hero_{$userId}",
             ]);
-            $templateGrid->stats()->create([
-                'hp'             => 50,
-                'strength'       => 5,
-                'intelligence'   => 3,
-                'defense_bonus'  => 2,
-                'mdefense_bonus' => 2,
-                'dexterity'      => 2,
-                'stamina'        => 5,
+
+            // === 2. Cria stats iniciais ===
+            $character->stats()->create([
+                'hp'             => 1000,
+                'level'          => 1,
+                'strength'       => 10,
+                'intelligence'   => 5,
+                'defense_bonus'  => 8,
+                'mdefense_bonus' => 8,
+                'dexterity'      => 7,
+                'stamina'        => 12,
             ]);
-        }
 
-        $equippedGrid = $templateGrid->replicateForCharacter($character);
+            // === 3. Cria inventários vazios ===
+            $character->soulInventory()->create();
+            $character->soulGridInventory()->create();
 
-        // === 6. Cria algumas Souls iniciais e equipa na grid ===
-        $initialSoulsData = [
-            ['name' => 'Soul A', 'skills' => [1, 2, 3, 5]],
-            ['name' => 'Soul B', 'skills' => [5, 6, 3, 1]],
-        ];
+            // === 4. Cria Skills iniciais no DB, se não existirem ===
+            $this->createDefaultSkills();
 
-        $soulsForRedis = [];
-        foreach ($initialSoulsData as $soulData) {
-            $soul = Soul::create(['name' => $soulData['name']]);
-            $soul->skills()->sync($soulData['skills']);
-            $equippedGrid->souls()->attach($soul->id);
+            // === 5. Replica e equipa SoulGrid inicial ===
+            $templateGrid = SoulGrid::where('name', 'Starter Grid')->first();
+            if (!$templateGrid) {
+                $templateGrid = SoulGrid::create([
+                    'name'        => 'Starter Grid',
+                    'slots_count' => 4,
+                ]);
+                $templateGrid->stats()->create([
+                    'hp'             => 50,
+                    'strength'       => 5,
+                    'intelligence'   => 3,
+                    'defense_bonus'  => 2,
+                    'mdefense_bonus' => 2,
+                    'dexterity'      => 2,
+                    'stamina'        => 5,
+                ]);
+            }
 
-            // Monta skills completas para o Redis
-            $skillsArray = $soul->skills()->get()->map(fn($skill) => [
-                'id'          => $skill->id,
-                'name'        => $skill->name,
-                'type'        => $skill->type,
-                'power'       => $skill->power ?? 0,
-                'stamina_cost' => $skill->stamina_cost ?? 0,
-                'pre_delay'   => $skill->pre_delay ?? 0,
-                'post_delay'  => $skill->post_delay ?? 0,
-                'duration' => $skill->duration ?? 0,
-                'level' => $skill->level ?? 1,
-                'stat' => $skill->stat,
-                'tick_interval' => $skill->interval,
-                'tick_skill_id' => $skill->tick_skill_id,
-            ])->toArray();
+            $equippedGrid = $templateGrid->replicateForCharacter($character);
 
-            $soulsForRedis[] = [
-                'id'     => $soul->id,
-                'name'   => $soul->name,
-                'skills' => $skillsArray,
+            // === 6. Cria algumas Souls iniciais e equipa na grid ===
+            $initialSoulsData = [
+                ['name' => 'Soul A', 'skills' => [1, 2, 3, 5]],
+                ['name' => 'Soul B', 'skills' => [5, 7, 3, 1]],
             ];
-        }
 
-        // === 7. Salva grid e souls no Redis ===
-        $gridKey = "battle:{$character->id}:character:{$character->id}:equipped_soul_grid";
-        Redis::set($gridKey, json_encode($soulsForRedis, JSON_UNESCAPED_UNICODE));
+            $soulsForRedis = [];
+            foreach ($initialSoulsData as $soulData) {
+                $soul = Soul::create(['name' => $soulData['name']]);
+                $soul->skills()->sync($soulData['skills']);
+                $equippedGrid->souls()->attach($soul->id);
 
-        // === 8. Salva character session no Redis ===
-        $statsArray = $character->stats ? $character->stats->toArray() : [];
-        Redis::hmset("character_session:{$character->id}", [
-            'id'      => $character->id,
-            'user_id' => $character->user_id,
-            'name'    => $character->name,
-            'stats'   => json_encode($statsArray, JSON_UNESCAPED_UNICODE),
-        ]);
+                // Monta skills completas para o Redis
+                $skillsArray = $soul->skills()->get()->map(fn($skill) => [
+                    'id'          => $skill->id,
+                    'name'        => $skill->name,
+                    'type'        => $skill->type,
+                    'power'       => $skill->power ?? 0,
+                    'stamina_cost' => $skill->stamina_cost ?? 0,
+                    'pre_delay'   => $skill->pre_delay ?? 0,
+                    'post_delay'  => $skill->post_delay ?? 0,
+                    'duration' => $skill->duration ?? 0,
+                    'level' => $skill->level ?? 1,
+                    'stat' => $skill->stat,
+                    'tick_interval' => $skill->interval,
+                    'tick_skill_id' => $skill->tick_skill_id,
+                ])->toArray();
 
-        return $character;
+                $soulsForRedis[] = [
+                    'id'     => $soul->id,
+                    'name'   => $soul->name,
+                    'skills' => $skillsArray,
+                ];
+            }
+
+            // === 7. Salva grid e souls no Redis ===
+            $gridKey = "battle:{$character->id}:character:{$character->id}:equipped_soul_grid";
+            Redis::set($gridKey, json_encode($soulsForRedis, JSON_UNESCAPED_UNICODE));
+
+            // === 8. Salva character session no Redis ===
+            $statsArray = $character->stats ? $character->stats->toArray() : [];
+            Redis::hmset("character_session:{$character->id}", [
+                'id'      => $character->id,
+                'user_id' => $character->user_id,
+                'name'    => $character->name,
+                'stats'   => json_encode($statsArray, JSON_UNESCAPED_UNICODE),
+            ]);
+
+            return $character;
+        });
     }
 
 

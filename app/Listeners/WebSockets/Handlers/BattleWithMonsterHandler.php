@@ -106,7 +106,9 @@ class BattleWithMonsterHandler
                             'post_delay'  => $skill->post_delay ?? 0,
                             'duration' => $skill->duration ?? 0,
                             'level' => $skill->level ?? 1,
-                            'stat' => $skill->stat
+                            'stat' => $skill->stat,
+                            'tick_interval' => $skill->tick_interval,
+                            'tick_skill_id' => $skill->tick_skill_id
                         ])->toArray()
                     ];
                 })->values()->toArray();
