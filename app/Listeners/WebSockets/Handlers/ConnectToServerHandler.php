@@ -38,7 +38,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'name' => 'Raise Defense',
             'type' => 'buff',
             'stat' => 'physical_defense_bonus',
-            'bonus' => 5,
+            'power' => 2,
             'duration' => 3,
             'stamina_cost' => 10,
             'pre_delay' => 300,
@@ -58,7 +58,6 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'name' => 'Wait',
             'type' => 'buff',
             'stat' => 'physical_defense_bonus',
-            'bonus' => 0,
             'duration' => 3,
             'stamina_cost' => 0,
             'pre_delay' => 300,
@@ -69,7 +68,6 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'name' => 'Death',
             'type' => 'debuff',
             'stat' => 'death',
-            'bonus' => 0,
             'duration' => 5, //necessary as it is
             'power' => 20,
             'stamina_cost' => 10,
@@ -254,7 +252,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
         // === 6. Cria algumas Souls iniciais e equipa na grid ===
         $initialSoulsData = [
             ['name' => 'Soul A', 'skills' => [1, 2, 3, 5]],
-            ['name' => 'Soul B', 'skills' => [5, 2, 3, 1]],
+            ['name' => 'Soul B', 'skills' => [5, 6, 3, 1]],
         ];
 
         $soulsForRedis = [];

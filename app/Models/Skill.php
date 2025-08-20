@@ -15,7 +15,6 @@ class Skill extends Model
         'post_delay',
         'level',
         'stat',
-        'bonus',
         'duration',
         'interval',
         'tick_skill_id',
