@@ -52,6 +52,7 @@ class BattleActions
                     'exists' => Redis::hexists("battle:$battleId:characters_data", $target['instanceId'])
                 ]);
 
+                // Aplica skill (pode ser ação normal ou tick)
                 $result = $skillService->applySkill($caster, $target, $battleId, $skillId, $casterType, $targetType);
 
                 Log::channel('battle_debug')->info("[executeAction] Result AFTER applySkill", [
@@ -59,17 +60,23 @@ class BattleActions
                     'result' => $result
                 ]);
 
-                if (isset($result['current_stamina'])) {
+                // === Tratamento de current_stamina nulo (ticks)
+                // applySkill agora pode retornar 'current_stamina' === null para aplicações de tick.
+                // Não sobrescrevemos $casterCurrentStamina com nulls — apenas atualizamos se houver valor não-nulo.
+                if (array_key_exists('current_stamina', $result) && $result['current_stamina'] !== null) {
                     $casterCurrentStamina = $result['current_stamina'];
                 }
 
+                // === Registro de used_stamina_total (se houver)
+                // Mantemos o registro apenas quando used_stamina_total estiver presente (isset)
                 if (isset($result['used_stamina_total'])) {
                     $resCasterId = (string)($result['caster_id'] ?? '');
                     if ($resCasterId !== '') {
+                        // current_stamina pode ser null (tick) e é aceitável — armazenamos mesmo assim
                         $staminaUpdates[$resCasterId] = [
                             'type' => $casterType,
                             'used_stamina_total' => (float)$result['used_stamina_total'],
-                            'current_stamina' => isset($result['current_stamina']) ? (float)$result['current_stamina'] : null,
+                            'current_stamina' => array_key_exists('current_stamina', $result) ? $result['current_stamina'] : null,
                         ];
                     }
                 }
@@ -80,22 +87,30 @@ class BattleActions
                 $actionInfoUse = $result['action_info_use'] ?? "$casterName usou $skillName";
                 $actionInfoResult = $result['action_info_result'] ?? '';
 
+                // Ajustei mensagens para serem resilientes a mudanças nos campos retornados pelo Lua
                 if (isset($result['damage_dealt'])) {
                     $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu dano de {$result['damage_dealt']}";
                 } elseif (isset($result['healed_amount'])) {
                     $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu cura de {$result['healed_amount']}";
                 } elseif (isset($result['buff_applied'])) {
                     $buff = $result['buff_applied'];
-                    $actionInfoResult = "Buff aplicado: +{$buff['bonus']} {$buff['stat']} por {$buff['duration']} turnos";
+                    // bonus pode ter sido removido do model; caia para 'power' ou 0 para evitar erro
+                    $buffValue = $buff['bonus'] ?? ($buff['power'] ?? 0);
+                    $buffDuration = $buff['duration'] ?? '∞';
+                    $buffStat = $buff['stat'] ?? 'unknown';
+                    $actionInfoResult = "Buff aplicado: +{$buffValue} {$buffStat} por {$buffDuration} turnos";
                 } elseif (isset($result['debuff_applied'])) {
                     $debuff = $result['debuff_applied'];
-                    $actionInfoResult = "Debuff aplicado em {$targetName}: -{$debuff['stat']} ({$debuff['power']}) por {$debuff['duration']} turnos";
-                    $globalMessages[] = "⚡ Debuff de {$debuff['stat']} aplicado com sucesso em {$targetName}!";
+                    $debuffPower = $debuff['power'] ?? 0;
+                    $debuffDuration = $debuff['duration'] ?? '∞';
+                    $debuffStat = $debuff['stat'] ?? 'unknown';
+                    $actionInfoResult = "Debuff aplicado em {$targetName}: -{$debuffStat} ({$debuffPower}) por {$debuffDuration} turnos";
+                    $globalMessages[] = "⚡ Debuff de {$debuffStat} aplicado com sucesso em {$targetName}!";
                 } elseif (!empty($result['debuff_failed'])) {
                     $chance = $result['debuff_chance'] ?? null;
                     $roll   = $result['debuff_roll'] ?? null;
                     $actionInfoResult = "Debuff falhou em {$targetName}";
-                    $globalMessages[] = "❌ Debuff em {$targetName} falhou (chance: " . round($chance * 100, 1) . "%, roll: {$roll})";
+                    $globalMessages[] = "❌ Debuff em {$targetName} falhou (chance: " . round(($chance ?? 0) * 100, 1) . "%, roll: {$roll})";
 
                     Log::channel('battle_debug')->warning("[executeAction] Debuff falhou", [
                         'caster' => $casterName,
@@ -105,13 +120,12 @@ class BattleActions
                     ]);
                 }
 
-                // Garante stats como array
-                // Use o sinal direto do resultado da skill (retornado pelo SkillService/Lua).
-                // Isso evita duplicar mensagens quando current_hp já estiver 0 localmente.
+                // Usa sinal retornado pela skill para detectar morte (evita depender do estado local)
                 if (!empty($result['someoneDied']) || !empty($result['target_died'])) {
                     $globalMessages[] = "{$targetName} morreu!";
                     $someoneDied = true;
                 }
+
                 $allResults[] = [
                     'actionInfoUse' => $actionInfoUse,
                     'actionInfoResult' => $actionInfoResult
@@ -123,7 +137,7 @@ class BattleActions
                 ]);
             }
 
-            // Payload atualizado dos players
+            // === Monta payload atualizado dos players (inclui stamina se houver updates)
             $playersPayload = [];
             foreach (Redis::hgetall("battle:$battleId:characters_data") as $playerId => $playerJson) {
                 $playerData = is_string($playerJson) ? json_decode($playerJson, true) ?? [] : $playerJson;
@@ -140,18 +154,19 @@ class BattleActions
                     $stRaw = Redis::hget("battle:$battleId:stamina_data", "character:$playerIdKey");
                     $stParsed = is_string($stRaw) ? json_decode($stRaw, true) ?? [] : $stRaw;
 
+                    // current_stamina pode ser null para ticks — propague esse null explicitamente
                     $playerPayload['staminaData'] = [
                         'initial_stamina' => (float)($stParsed['initial_stamina'] ?? 0),
                         'start_time' => (int)($stParsed['start_time'] ?? 0),
                         'used_stamina_total' => (float)$staminaUpdates[$playerIdKey]['used_stamina_total'],
-                        'current_stamina' => $staminaUpdates[$playerIdKey]['current_stamina'] ?? null,
+                        'current_stamina' => array_key_exists('current_stamina', $staminaUpdates[$playerIdKey]) ? $staminaUpdates[$playerIdKey]['current_stamina'] : null,
                     ];
                 }
 
                 $playersPayload[] = $playerPayload;
             }
 
-            // Payload atualizado dos monstros
+            // === Monta payload atualizado dos monstros (inclui stamina se houver updates)
             $enemiesPayload = [];
             foreach (Redis::hgetall("battle:$battleId:monsters") as $monsterId => $monsterJson) {
                 $monsterData = is_string($monsterJson) ? json_decode($monsterJson, true) ?? [] : $monsterJson;
@@ -172,7 +187,7 @@ class BattleActions
                         'initial_stamina' => (float)($stParsed['initial_stamina'] ?? 0),
                         'start_time' => (int)($stParsed['start_time'] ?? 0),
                         'used_stamina_total' => (float)$staminaUpdates[$monsterIdKey]['used_stamina_total'],
-                        'current_stamina' => $staminaUpdates[$monsterIdKey]['current_stamina'] ?? null,
+                        'current_stamina' => array_key_exists('current_stamina', $staminaUpdates[$monsterIdKey]) ? $staminaUpdates[$monsterIdKey]['current_stamina'] : null,
                     ];
                 }
 

@@ -122,7 +122,7 @@ class SkillService
         $casterStats = $caster['stats'] ?? [];
         if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
 
-        $isTickSkill = !is_null($skill['tick_skill_id']);
+        $isTickSkill = !empty($skill['tick_skill_flag']);
         if (!$isTickSkill) {
             // Cooldown global apenas para jogadores
             if ($casterType === 'character') {
@@ -217,7 +217,7 @@ class SkillService
             'battle_id' => $battleId,
             'caster_id' => $casterId,
             'skill_id' => $skillId,
-            'current_stamina' => $currentAfterConsumption,
+            'current_stamina' => $currentAfterConsumption ?? null,
             'initial_stamina' => null,
             'used_stamina_total' => $usedStaminaTotal,
             'pre_delay' => $skill['pre_delay'] ?? 0,

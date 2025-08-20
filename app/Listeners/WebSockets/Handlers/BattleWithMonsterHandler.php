@@ -108,7 +108,8 @@ class BattleWithMonsterHandler
                             'level' => $skill->level ?? 1,
                             'stat' => $skill->stat,
                             'tick_interval' => $skill->tick_interval,
-                            'tick_skill_id' => $skill->tick_skill_id
+                            'tick_skill_id' => $skill->tick_skill_id,
+                            'tick_skill_flag' => $skill->tick_skill_flag,
                         ])->toArray()
                     ];
                 })->values()->toArray();

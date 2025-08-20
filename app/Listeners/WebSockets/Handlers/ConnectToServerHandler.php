@@ -265,6 +265,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
                     'stat' => $skill->stat,
                     'tick_interval' => $skill->interval,
                     'tick_skill_id' => $skill->tick_skill_id,
+                    'tick_skill_flag' => $skill->tick_skill_flag,
                 ])->toArray();
 
                 $soulsForRedis[] = [
