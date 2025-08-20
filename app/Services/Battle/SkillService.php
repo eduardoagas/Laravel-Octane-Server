@@ -192,7 +192,7 @@ class SkillService
             $target['instanceId'],
             $power,
             $skill['stat'] ?? '',
-            $skill['duration'] ?? 0,
+            $skill['duration'],
             $skill['level'],
             $casterType,
             $skill['tick_skill_id'] ?? null  // ✅ Adiciona o tick_skill_id aqui
@@ -263,7 +263,11 @@ class SkillService
     }
 
     /**
-     * Helper: busca a skill no Redis para um caster específico
+     * Helper: busca a skill no Redis para um caster específico.
+     *
+     * NOVO: agora tentamos buscar primeiro em "tick_skills" (caso a skill seja uma tick)
+     * e depois em "skills". Isso garante que tick skills (com tick_skill_flag = true)
+     * sejam resgatadas da chave correta.
      *
      * @param string $battleId
      * @param string $casterType 'character'|'monster'
@@ -273,6 +277,25 @@ class SkillService
      */
     private function findSkillInRedis(string $battleId, string $casterType, string $casterId, int $skillId): ?array
     {
+        // 📌 Chave NOVA: tick_skills por caster/instância
+        $tickKey = "battle:{$battleId}:{$casterType}:{$casterId}:tick_skills";
+        $rawTick = Redis::get($tickKey);
+        if ($rawTick) {
+            $arrTick = json_decode($rawTick, true);
+            if (is_array($arrTick)) {
+                foreach ($arrTick as $s) {
+                    if ((int)($s['id'] ?? -1) === $skillId) {
+                        // Encontrou na lista de tick skills -> retorna imediatamente
+                        Log::debug("[SkillService] Skill {$skillId} encontrada em tick_skills ({$tickKey}) para {$casterType}:{$casterId}");
+                        return $s;
+                    }
+                }
+            } else {
+                Log::warning("[SkillService] Dados inválidos em {$tickKey} para {$casterType}:{$casterId}");
+            }
+        }
+
+        // Se não encontrou em tick_skills, busca nas skills normais (comportamento antigo)
         $redisKey = "battle:{$battleId}:{$casterType}:{$casterId}:skills";
         $raw = Redis::get($redisKey);
         if (!$raw) {
@@ -297,9 +320,26 @@ class SkillService
 
     /**
      * Versão estática do finder para métodos estáticos (usa Redis facade)
+     *
+     * NOVO: mesma lógica — procura primeiro em tick_skills, depois em skills.
      */
     private static function findSkillInRedisStatic(string $battleId, string $casterType, string $casterId, int $skillId): ?array
     {
+        // tenta tick_skills primeiro
+        $tickKey = "battle:{$battleId}:{$casterType}:{$casterId}:tick_skills";
+        $rawTick = Redis::get($tickKey);
+        if ($rawTick) {
+            $arrTick = json_decode($rawTick, true);
+            if (is_array($arrTick)) {
+                foreach ($arrTick as $s) {
+                    if ((int)($s['id'] ?? -1) === $skillId) {
+                        return $s;
+                    }
+                }
+            }
+        }
+
+        // fallback para skills
         $redisKey = "battle:{$battleId}:{$casterType}:{$casterId}:skills";
         $raw = Redis::get($redisKey);
         if (!$raw) {

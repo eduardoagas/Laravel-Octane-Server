@@ -47,9 +47,10 @@ class BattleManager
      * - Espera que debuffs/buffs contenham, idealmente: caster_id, caster_type, duration, skill_id (opcional), tick_interval (opcional)
      * - Mantém consistência com o uso de instanceIds em todo o BattleManager
      */
-    public function processBattleEffects(string $battleId): void
+    public function processBattleEffects(string $battleId): bool
     {
         $skillService = app(\App\Services\Battle\SkillService::class);
+        $processedAny = false;
 
         // ------------- PROCESSA CHARACTERS (por instanceId) -------------
         $charInstanceIds = Redis::smembers("battle:$battleId:characters_instances") ?: [];
@@ -62,13 +63,15 @@ class BattleManager
             if (is_string($charStats)) $charStats = json_decode($charStats, true) ?: [];
 
             // tratar tanto debuffs quanto buffs
-            $this->processEffectsForEntity(
+            $processed = $this->processEffectsForEntity(
                 $battleId,
                 'character',
                 $instanceId,
                 $charStats,
                 $skillService
             );
+
+            if ($processed) $processedAny = true;
         }
 
         // ------------- PROCESSA MONSTERS (por instanceId chave do hash) -------------
@@ -78,14 +81,18 @@ class BattleManager
             $monsterStats = $monsterEntity['stats'] ?? [];
             if (is_string($monsterStats)) $monsterStats = json_decode($monsterStats, true) ?: [];
 
-            $this->processEffectsForEntity(
+            $processed = $this->processEffectsForEntity(
                 $battleId,
                 'monster',
                 (string)$monsterInstanceId,
                 $monsterStats,
                 $skillService
             );
+
+            if ($processed) $processedAny = true;
         }
+
+        return $processedAny;
     }
 
     /**
@@ -95,61 +102,80 @@ class BattleManager
      * - $instanceId: instanceId na batalha
      * - $stats: array decodificado de stats (pelo menos para compor o caster/target payloads)
      */
-    private function processEffectsForEntity(string $battleId, string $entityType, string $instanceId, array $stats, \App\Services\Battle\SkillService $skillService): void
-    {
-        // normaliza chaves e prefixos
+    private function processEffectsForEntity(
+        string $battleId,
+        string $entityType,
+        string $instanceId,
+        array $stats,
+        \App\Services\Battle\SkillService $skillService
+    ): bool {
+        $processed = false;
         $isCharacter = $entityType === 'character';
-        $entityPrefix = $isCharacter ? "character" : "monster"; // usado nas keys: battle:<id>:character:<instanceId>:debuffs
+        $entityPrefix = $isCharacter ? "character" : "monster";
         $baseKey = "battle:$battleId:{$entityPrefix}:{$instanceId}";
 
-        // processa DEBUFFS
-        $debuffsKey = $baseKey . ":debuffs";
+        // --- Determine debuffs key: prefer per-instance, fallback to shared monsters:debuffs ---
+        $perInstanceDebuffsKey = $baseKey . ":debuffs";
+        $sharedMonstersDebuffsKey = "battle:$battleId:monsters:debuffs";
+        if ($isCharacter) {
+            $debuffsKey = $perInstanceDebuffsKey;
+            $useSharedDebuffs = false;
+        } else {
+            // monster
+            if (Redis::exists($perInstanceDebuffsKey)) {
+                $debuffsKey = $perInstanceDebuffsKey;
+                $useSharedDebuffs = false;
+            } else {
+                $debuffsKey = $sharedMonstersDebuffsKey;
+                $useSharedDebuffs = true;
+            }
+        }
+
         $debuffs = Redis::hgetall($debuffsKey) ?: [];
 
         foreach ($debuffs as $field => $json) {
+            // when using shared hash for monsters, only handle fields for this instance
+            if ($useSharedDebuffs) {
+                // fields format expected: "<instanceId>:<stat>:<casterId>" (per your earlier pattern)
+                if (strpos((string)$field, $instanceId . ':') !== 0) {
+                    continue; // not for this instance
+                }
+            }
+
             $data = json_decode($json, true);
             if (!is_array($data)) {
-                // cleanup caso corrompido
                 Redis::hdel($debuffsKey, $field);
-                Log::warning("[BattleEffects] Debuff JSON inválido. Removed corrupted entry for {$entityType} {$instanceId} field {$field} (battle {$battleId})");
+                Log::warning("[BattleEffects] Debuff JSON inválido for {$entityType} {$instanceId} field {$field} (key {$debuffsKey})");
+                $processed = true;
                 continue;
             }
 
-            // decrementa duração (em ticks)
-            $data['duration'] = (int)($data['duration'] ?? 0) - 1;
-
-            if ($data['duration'] <= 0) {
-                // remove debuff e contador de tick
-                Redis::hdel($debuffsKey, $field);
-                Redis::del("{$baseKey}:debuff_tick:{$field}");
-                Log::info("[BattleEffects] Removed expired debuff {$field} from {$entityType} {$instanceId} in battle {$battleId}");
-                continue;
+            // duration: only decrement if set and not null (permanent = null stays)
+            if (isset($data['duration']) && $data['duration'] !== null) {
+                $data['duration'] = (int)$data['duration'] - 1;
+                if ($data['duration'] <= 0) {
+                    Redis::hdel($debuffsKey, $field);
+                    Log::info("[BattleEffects] Removed expired debuff {$field} from {$entityType} {$instanceId} (key {$debuffsKey})");
+                    $processed = true;
+                    continue;
+                }
             }
 
-            // persiste nova duração
-            Redis::hset($debuffsKey, $field, json_encode($data, JSON_UNESCAPED_UNICODE));
-
-            // se houver skill_id, processa tick interval
+            // tick logic (tick_count stored inside the debuff JSON)
+            $tickCount = (int)($data['tick_count'] ?? 0);
+            $interval = isset($data['tick_interval']) ? (int)$data['tick_interval'] : 1;
             $skillId = isset($data['tick_skill_id']) ? (int)$data['tick_skill_id'] : null;
-            $interval = isset($data['tick_interval']) ? (int)$data['tick_interval'] : (isset($data['interval']) ? (int)$data['interval'] : 1);
 
             if ($skillId) {
-                $tickKey = "{$baseKey}:debuff_tick:{$field}";
-                $tickCount = (int)Redis::get($tickKey);
                 $tickCount++;
-                Redis::set($tickKey, $tickCount);
-
+                Log::debug("[BattleEffects] Debuff tick check: battle={$battleId} entity={$entityType} instance={$instanceId} field={$field} tickCount={$tickCount} interval={$interval} skillId={$skillId}");
                 if ($tickCount >= max(1, $interval)) {
-                    // resolve caster: prefer caster_id + caster_type armazenados no debuff, senão fallback para o target
                     $casterId = $data['caster_id'] ?? null;
                     $casterType = $data['caster_type'] ?? null;
 
-                    if ($casterId && $casterType) {
-                        $resolvedCaster = $this->resolveEntityForTick($battleId, (string)$casterType, (string)$casterId);
-                    } else {
-                        // fallback: caster é o próprio alvo (instanceId)
-                        $resolvedCaster = $this->resolveEntityForTick($battleId, $entityType, $instanceId);
-                    }
+                    $resolvedCaster = ($casterId && $casterType)
+                        ? $this->resolveEntityForTick($battleId, (string)$casterType, (string)$casterId)
+                        : $this->resolveEntityForTick($battleId, $entityType, $instanceId);
 
                     $resolvedTarget = $this->resolveEntityForTick($battleId, $entityType, $instanceId);
 
@@ -159,13 +185,12 @@ class BattleManager
                             $resolvedTarget,
                             $battleId,
                             $skillId,
-                            $resolvedCaster['type'] === 'monster' ? 'monster' : 'character',
-                            $resolvedTarget['type'] === 'monster' ? 'monster' : 'character'
+                            $resolvedCaster['type'],
+                            $resolvedTarget['type']
                         );
-
-                        Log::info("[BattleEffects] Applied debuff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} in battle {$battleId}");
+                        Log::info("[BattleEffects] Applied debuff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} (key {$debuffsKey})");
                     } catch (\Throwable $e) {
-                        Log::error("[BattleEffects] Failed to apply debuff tick skill {$skillId} for {$field} on {$entityType} {$instanceId}: " . $e->getMessage(), [
+                        Log::error("[BattleEffects] Failed debuff tick skill {$skillId} for {$field}: " . $e->getMessage(), [
                             'battle' => $battleId,
                             'entityType' => $entityType,
                             'instanceId' => $instanceId,
@@ -174,57 +199,75 @@ class BattleManager
                         ]);
                     }
 
-                    // reseta contador
-                    Redis::set($tickKey, 0);
+                    $tickCount = 0;
+                    $processed = true;
                 }
+            }
+
+            $data['tick_count'] = $tickCount;
+
+            // persist back to the same key we read from
+            Redis::hset($debuffsKey, $field, json_encode($data, JSON_UNESCAPED_UNICODE));
+            $processed = true;
+        }
+
+        // --- BUFFS: same approach (per-instance key preferred, fallback to shared monsters:buffs) ---
+        $perInstanceBuffsKey = $baseKey . ":buffs";
+        $sharedMonstersBuffsKey = "battle:$battleId:monsters:buffs";
+        if ($isCharacter) {
+            $buffsKey = $perInstanceBuffsKey;
+            $useSharedBuffs = false;
+        } else {
+            if (Redis::exists($perInstanceBuffsKey)) {
+                $buffsKey = $perInstanceBuffsKey;
+                $useSharedBuffs = false;
+            } else {
+                $buffsKey = $sharedMonstersBuffsKey;
+                $useSharedBuffs = true;
             }
         }
 
-        // processa BUFFS (mesma ideia que debuffs — alguns buffs podem também ter skill_id/tick_interval)
-        $buffsKey = $baseKey . ":buffs";
         $buffs = Redis::hgetall($buffsKey) ?: [];
 
         foreach ($buffs as $field => $json) {
-            $data = json_decode($json, true);
-            if (!is_array($data)) {
-                Redis::hdel($buffsKey, $field);
-                Log::warning("[BattleEffects] Buff JSON inválido. Removed corrupted entry for {$entityType} {$instanceId} field {$field} (battle {$battleId})");
-                continue;
-            }
-
-            if ($data['duration'] !== null) {
-                $data['duration'] = (int)$data['duration'] - 1;
-
-                if ($data['duration'] <= 0) {
-                    Redis::hdel($buffsKey, $field);
-                    Redis::del("{$baseKey}:buff_tick:{$field}");
-                    Log::info("[BattleEffects] Removed expired buff {$field} from {$entityType} {$instanceId} in battle {$battleId}");
+            if ($useSharedBuffs) {
+                if (strpos((string)$field, $instanceId . ':') !== 0) {
                     continue;
                 }
             }
 
-            // persiste nova duração
-            Redis::hset($buffsKey, $field, json_encode($data, JSON_UNESCAPED_UNICODE));
+            $data = json_decode($json, true);
+            if (!is_array($data)) {
+                Redis::hdel($buffsKey, $field);
+                Log::warning("[BattleEffects] Buff JSON inválido for {$entityType} {$instanceId} field {$field} (key {$buffsKey})");
+                $processed = true;
+                continue;
+            }
 
-            // se houver skill_id (buff que gera tick effects), processa
+            if (isset($data['duration']) && $data['duration'] !== null) {
+                $data['duration'] = (int)$data['duration'] - 1;
+                if ($data['duration'] <= 0) {
+                    Redis::hdel($buffsKey, $field);
+                    Log::info("[BattleEffects] Removed expired buff {$field} from {$entityType} {$instanceId} (key {$buffsKey})");
+                    $processed = true;
+                    continue;
+                }
+            }
+
+            $tickCount = (int)($data['tick_count'] ?? 0);
+            $interval = isset($data['tick_interval']) ? (int)$data['tick_interval'] : 1;
             $skillId = isset($data['tick_skill_id']) ? (int)$data['tick_skill_id'] : null;
-            $interval = isset($data['tick_interval']) ? (int)$data['tick_interval'] : (isset($data['interval']) ? (int)$data['interval'] : 1);
 
             if ($skillId) {
-                $tickKey = "{$baseKey}:buff_tick:{$field}";
-                $tickCount = (int)Redis::get($tickKey);
                 $tickCount++;
-                Redis::set($tickKey, $tickCount);
-
+                Log::debug("[BattleEffects] Buff tick check: battle={$battleId} entity={$entityType} instance={$instanceId} field={$field} tickCount={$tickCount} interval={$interval} skillId={$skillId}");
                 if ($tickCount >= max(1, $interval)) {
                     $casterId = $data['caster_id'] ?? null;
                     $casterType = $data['caster_type'] ?? null;
 
-                    if ($casterId && $casterType) {
-                        $resolvedCaster = $this->resolveEntityForTick($battleId, (string)$casterType, (string)$casterId);
-                    } else {
-                        $resolvedCaster = $this->resolveEntityForTick($battleId, $entityType, $instanceId);
-                    }
+                    $resolvedCaster = ($casterId && $casterType)
+                        ? $this->resolveEntityForTick($battleId, (string)$casterType, (string)$casterId)
+                        : $this->resolveEntityForTick($battleId, $entityType, $instanceId);
 
                     $resolvedTarget = $this->resolveEntityForTick($battleId, $entityType, $instanceId);
 
@@ -234,13 +277,12 @@ class BattleManager
                             $resolvedTarget,
                             $battleId,
                             $skillId,
-                            $resolvedCaster['type'] === 'monster' ? 'monster' : 'character',
-                            $resolvedTarget['type'] === 'monster' ? 'monster' : 'character'
+                            $resolvedCaster['type'],
+                            $resolvedTarget['type']
                         );
-
-                        Log::info("[BattleEffects] Applied buff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} in battle {$battleId}");
+                        Log::info("[BattleEffects] Applied buff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} (key {$buffsKey})");
                     } catch (\Throwable $e) {
-                        Log::error("[BattleEffects] Failed to apply buff tick skill {$skillId} for {$field} on {$entityType} {$instanceId}: " . $e->getMessage(), [
+                        Log::error("[BattleEffects] Failed buff tick skill {$skillId} for {$field}: " . $e->getMessage(), [
                             'battle' => $battleId,
                             'entityType' => $entityType,
                             'instanceId' => $instanceId,
@@ -249,11 +291,19 @@ class BattleManager
                         ]);
                     }
 
-                    Redis::set($tickKey, 0);
+                    $tickCount = 0;
+                    $processed = true;
                 }
             }
+
+            $data['tick_count'] = $tickCount;
+            Redis::hset($buffsKey, $field, json_encode($data, JSON_UNESCAPED_UNICODE));
+            $processed = true;
         }
+
+        return $processed;
     }
+
 
     /**
      * Resolve e monta o payload da entidade usado como caster/target para applySkill.

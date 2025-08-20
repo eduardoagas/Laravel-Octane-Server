@@ -84,6 +84,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'pre_delay' => 0,
             'post_delay' => 0,
             'level' => 1,
+            'tick_skill_flag' => true,
         ],
         7 => [ // ✅ Poison skill inicial
             'name' => 'Poison',
@@ -134,8 +135,8 @@ class ConnectToServerHandler implements HandlesUnityEvent
             }
         }
 
-        // garante relação carregada
-        $character->load('stats');
+        $character->load('stats'); // garante stats carregadas
+
 
         // ===== preparar stats =====
         $statsArray = $character->stats ? $character->stats->toArray() : [];
@@ -260,13 +261,41 @@ class ConnectToServerHandler implements HandlesUnityEvent
                     'stamina_cost' => $skill->stamina_cost ?? 0,
                     'pre_delay'   => $skill->pre_delay ?? 0,
                     'post_delay'  => $skill->post_delay ?? 0,
-                    'duration' => $skill->duration ?? 0,
+                    'duration' => $skill->duration,
                     'level' => $skill->level ?? 1,
                     'stat' => $skill->stat,
                     'tick_interval' => $skill->interval,
                     'tick_skill_id' => $skill->tick_skill_id,
                     'tick_skill_flag' => $skill->tick_skill_flag,
                 ])->toArray();
+
+                // === Monta tick skills ===
+                foreach ($skillsArray as $skill) {
+                    if (!empty($skill['tick_skill_id'])) {
+                        // skill que dispara tick skill (flag false)
+                        $tickSkillModel = \App\Models\Skill::find((int)$skill['tick_skill_id']);
+                        if ($tickSkillModel) {
+                            $tickSkillsForRedis[$tickSkillModel->id] = [
+                                'id' => $tickSkillModel->id,
+                                'name' => $tickSkillModel->name,
+                                'type' => $tickSkillModel->type,
+                                'power' => $tickSkillModel->power ?? 0,
+                                'stamina_cost' => $tickSkillModel->stamina_cost ?? 0,
+                                'pre_delay' => $tickSkillModel->pre_delay ?? 0,
+                                'post_delay' => $tickSkillModel->post_delay ?? 0,
+                                'duration' => $tickSkillModel->duration,
+                                'level' => $tickSkillModel->level ?? 1,
+                                'stat' => $tickSkillModel->stat,
+                                'tick_interval' => $tickSkillModel->tick_interval,
+                                'tick_skill_id' => $tickSkillModel->tick_skill_id, // geralmente null
+                                'tick_skill_flag' => true, // tick skill sempre true
+                            ];
+                        }
+                    } elseif (!empty($skill['tick_skill_flag'])) {
+                        // skill que já é tick skill
+                        $tickSkillsForRedis[$skill['id']] = $skill;
+                    }
+                }
 
                 $soulsForRedis[] = [
                     'id'     => $soul->id,
@@ -275,9 +304,15 @@ class ConnectToServerHandler implements HandlesUnityEvent
                 ];
             }
 
+
+
             // === 7. Salva grid e souls no Redis ===
             $gridKey = "battle:{$character->id}:character:{$character->id}:equipped_soul_grid";
             Redis::set($gridKey, json_encode($soulsForRedis, JSON_UNESCAPED_UNICODE));
+
+            // === Salva tick skills separadas no Redis ===
+            $tickSkillsKey = "battle:{$character->id}:character:{$character->id}:tick_skills";
+            Redis::set($tickSkillsKey, json_encode(array_values($tickSkillsForRedis), JSON_UNESCAPED_UNICODE));
 
             // === 8. Salva character session no Redis ===
             $statsArray = $character->stats ? $character->stats->toArray() : [];

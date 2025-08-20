@@ -14,7 +14,7 @@ local casterId = ARGV[2] or ""
 local targetId = ARGV[3] or ""
 local power = tonumber(ARGV[4]) or 0
 local stat = ARGV[5] or ""
-local duration = tonumber(ARGV[6]) or 0
+local duration = tonumber(ARGV[6]) or nil
 local level = tonumber(ARGV[7]) or 1
 local casterType = ARGV[8] or "" -- NOVO: tipo de quem aplicou a skill (usaremos ao armazenar debuffs/buffs)
 local tickSkillId = tonumber(ARGV[9]) or nil
@@ -139,12 +139,13 @@ local function apply_debuff(casterId, casterType, targetId, targetKey, stat, pow
     local roll = nano_random()
     if roll < chance then
         -- NOTE: inclui caster_type no objeto salvo (ALTERAÇÃO)
+        duration = duration and math.floor(duration) or nil
         local debuff = {
             caster_id = casterId,
             caster_type = casterType, -- NOVO: armazena a origem (character/monster)
             stat = stat,
             power = math.floor(power),
-            duration = math.floor(duration),
+            duration = duration,
             applied_at = redis.call('TIME')[1],
             tick_skill_id = tickSkillId
 

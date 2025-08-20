@@ -45,7 +45,7 @@ class AppServiceProvider extends ServiceProvider
             foreach ($battleIds as $battleId) {
                 $processed = $battleManager->processBattleEffects($battleId);
                 if ($processed) {
-                    \Illuminate\Support\Facades\Log::info("[BattleMonstersTicker] Processed effects for battle $battleId");
+                    \Illuminate\Support\Facades\Log::info("[BattleEffectsTicker] Processed effects for battle $battleId");
                 }
             }
         }, 1.0);

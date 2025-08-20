@@ -31,7 +31,7 @@ class BattleWithMonsterHandler
             return;
         }
 
-        // 2️⃣ Busca os dados do personagem (vêm como strings do Redis)
+        // 2️⃣ Busca os dados do personagem (sessão)
         $characterRaw = Redis::hgetall("character_session:$characterId");
         if (empty($characterRaw)) {
             $connection->send(json_encode(['error' => 'Character data not found']));
@@ -39,24 +39,20 @@ class BattleWithMonsterHandler
             return;
         }
 
-        // normaliza stats (string JSON -> array, "Array" -> [], array -> array)
         $stats = $this->normalizeStatsValue($characterRaw['stats'] ?? null);
-
-        // garante current_hp
         $stats['current_hp'] = $stats['hp'] ?? 0;
-        // garante statuses
+
         if (!isset($stats['statuses']) || !is_array($stats['statuses'])) {
             $stats['statuses'] = [];
         }
 
-        // monta payload limpo do personagem (array/obj) — usado para enviar e para persistir na estrutura da battle
         $characterPayload = [
-            'id'         => $characterId,
-            'user_id'    => isset($characterRaw['user_id']) ? (int)$characterRaw['user_id'] : null,
-            'name'       => $characterRaw['name'] ?? null,
+            'id' => $characterId,
+            'user_id' => isset($characterRaw['user_id']) ? (int)$characterRaw['user_id'] : null,
+            'name' => $characterRaw['name'] ?? null,
             'created_at' => $characterRaw['created_at'] ?? null,
             'updated_at' => $characterRaw['updated_at'] ?? null,
-            'stats'      => $stats,
+            'stats' => $stats,
         ];
 
         // 3️⃣ Criar ID único para a batalha
@@ -67,78 +63,150 @@ class BattleWithMonsterHandler
         $playerInstanceId = $currentPlayers + 1;
         $characterPayload['instanceId'] = (string)$playerInstanceId;
 
-        // 5️⃣ Registrar personagem na batalha (mantém set por characterId e por instanceId)
-        Redis::sadd("battle:$battleId:characters", (string)$characterId); // opcional: id do model
-        Redis::sadd("battle:$battleId:characters_instances", (string)$playerInstanceId); // instâncias
-
-        // grava um JSON da estrutura do personagem em characters_data usando instanceId
+        // 5️⃣ Registrar personagem na batalha
+        Redis::sadd("battle:$battleId:characters", (string)$characterId);
+        Redis::sadd("battle:$battleId:characters_instances", (string)$playerInstanceId);
         Redis::hset("battle:$battleId:characters_data", (string)$playerInstanceId, json_encode($characterPayload, JSON_UNESCAPED_UNICODE));
 
         // 6️⃣ Vincular battle_instance_id na sessão
         Redis::hset("session:$token", 'battle_instance_id', $battleId);
 
-        // Inicializações para o preload
+        // Preparações
         $characterModel = null;
         $soulsArray = [];
         $preferredSlot = 0;
 
-        /*
-         * === NOVO: Pré-carrega a SoulGrid equipada (com Souls e Skills) para uso rápido durante a batalha ===
-         */
+        // NOVO: Carrega sempre do Postgres a equippedSoulGrid -> souls -> skills (fonte única)
         try {
-            // Busca o Character completo com a relação equipada -> souls -> skills
             $characterModel = Character::with(['equippedSoulGrid.souls.skills'])->find($characterId);
+        } catch (\Throwable $e) {
+            Log::warning("Failed to load Character model (non-fatal). Will proceed with minimal data.", [
+                'character_id' => $characterId,
+                'error' => $e->getMessage(),
+            ]);
+            $characterModel = null;
+        }
 
+        // === NOVO: Sempre construir a estrutura do equipped_soul_grid a partir do DB (Postgres) ===
+        $tickSkillsForInstance = []; // coletor de tick skills (associativo por id)
+        try {
             if ($characterModel && $characterModel->equippedSoulGrid) {
                 $equippedGrid = $characterModel->equippedSoulGrid;
 
-                $soulsArray = $equippedGrid->souls()->with('skills')->get()->map(function ($soul) {
+                // percorre todas as souls do grid e suas skills (vindo do Postgres)
+                $soulsArray = $equippedGrid->souls()->with('skills')->get()->map(function ($soul) use (&$tickSkillsForInstance) {
+                    $skillsArray = $soul->skills->map(function ($skill) use (&$tickSkillsForInstance) {
+                        $skillArr = [
+                            'id' => $skill->id,
+                            'name' => $skill->name,
+                            'type' => $skill->type,
+                            'power' => $skill->power ?? 0,
+                            'stamina_cost' => $skill->stamina_cost ?? 0,
+                            'pre_delay' => $skill->pre_delay ?? 0,
+                            'post_delay' => $skill->post_delay ?? 0,
+                            'duration' => $skill->duration,
+                            'level' => $skill->level ?? 1,
+                            'stat' => $skill->stat,
+                            'tick_interval' => $skill->tick_interval ?? null,
+                            'tick_skill_id' => $skill->tick_skill_id ?? null,
+                            'tick_skill_flag' => $skill->tick_skill_flag ?? false,
+                        ];
+
+                        // Identifica tick skills:
+                        // - se esta skill já é tick (flag true) -> guarda ela
+                        if (!empty($skill->tick_skill_flag)) {
+                            $tickSkillsForInstance[$skill->id] = $skillArr;
+                        }
+
+                        // - se esta skill referencia uma tick via tick_skill_id -> tentamos buscar a tick skill e guardar
+                        if (!empty($skill->tick_skill_id)) {
+                            $tickModel = Skill::find((int)$skill->tick_skill_id);
+                            if ($tickModel) {
+                                $tickArr = [
+                                    'id' => $tickModel->id,
+                                    'name' => $tickModel->name,
+                                    'type' => $tickModel->type,
+                                    'power' => $tickModel->power ?? 0,
+                                    'stamina_cost' => $tickModel->stamina_cost ?? 0,
+                                    'pre_delay' => $tickModel->pre_delay ?? 0,
+                                    'post_delay' => $tickModel->post_delay ?? 0,
+                                    'duration' => $tickModel->duration,
+                                    'level' => $tickModel->level ?? 1,
+                                    'stat' => $tickModel->stat,
+                                    'tick_interval' => $tickModel->tick_interval ?? null,
+                                    'tick_skill_id' => $tickModel->tick_skill_id ?? null,
+                                    'tick_skill_flag' => $tickModel->tick_skill_flag ?? true,
+                                ];
+                                $tickSkillsForInstance[$tickModel->id] = $tickArr;
+                            } else {
+                                Log::warning("Referenced tick skill not found in DB while building grid", [
+                                    'character_id' => $soul->pivot->character_id ?? null,
+                                    'referenced_tick_skill_id' => $skill->tick_skill_id,
+                                ]);
+                            }
+                        }
+
+                        return $skillArr;
+                    })->toArray();
+
                     return [
                         'id' => $soul->id,
                         'name' => $soul->name,
-                        'skills' => $soul->skills->map(fn($skill) => [
-                            'id'          => $skill->id,
-                            'name'        => $skill->name,
-                            'type'        => $skill->type,
-                            'power'       => $skWill->power ?? 0,
-                            'stamina_cost' => $skill->stamina_cost ?? 0,
-                            'pre_delay'   => $skill->pre_delay ?? 0,
-                            'post_delay'  => $skill->post_delay ?? 0,
-                            'duration' => $skill->duration ?? 0,
-                            'level' => $skill->level ?? 1,
-                            'stat' => $skill->stat,
-                            'tick_interval' => $skill->tick_interval,
-                            'tick_skill_id' => $skill->tick_skill_id,
-                            'tick_skill_flag' => $skill->tick_skill_flag,
-                        ])->toArray()
+                        'skills' => $skillsArray,
                     ];
                 })->values()->toArray();
 
-                // Salva a estrutura completa do grid no Redis para esta batalha/instance
-                // Key: battle:$battleId:character:{$playerInstanceId}:equipped_soul_grid
-                Redis::set("battle:$battleId:character:{$playerInstanceId}:equipped_soul_grid", json_encode($soulsArray, JSON_UNESCAPED_UNICODE));
+                // grava a estrutura completa do grid da instância (vinda do Postgres)
+                $instanceGridKey = "battle:$battleId:character:{$playerInstanceId}:equipped_soul_grid";
+                Redis::set($instanceGridKey, json_encode($soulsArray, JSON_UNESCAPED_UNICODE));
 
-                // Log para debug/performance (inclui both ids)
-                Log::info("Equipped SoulGrid preloaded into Redis for battle", [
+                Log::info("Equipped SoulGrid built from Postgres and saved to instance", [
                     'battle' => $battleId,
                     'character_id' => $characterId,
                     'instance_id' => $playerInstanceId,
                     'soul_grid_id' => $equippedGrid->id,
+                    'souls_count' => count($soulsArray),
                 ]);
             } else {
-                // Sem grid equipada: registra no log (não é erro crítico)
-                Log::info("No equipped SoulGrid found for character when starting battle", [
+                // sem grid no model: garante chave vazia na instância
+                $soulsArray = [];
+                $instanceGridKey = "battle:$battleId:character:{$playerInstanceId}:equipped_soul_grid";
+                Redis::set($instanceGridKey, json_encode([], JSON_UNESCAPED_UNICODE));
+                Log::info("No equipped SoulGrid found in DB for character; saved empty grid to instance", [
+                    'battle' => $battleId,
                     'character_id' => $characterId,
                     'instance_id' => $playerInstanceId,
-                    'battle' => $battleId,
                 ]);
             }
         } catch (\Throwable $e) {
-            // Erro no pré-carregamento: loga e continua (não bloqueia a criação da batalha)
-            Log::error('Failed to preload equipped SoulGrid for battle', [
+            // não bloqueia a batalha; salva vazios e loga
+            $soulsArray = [];
+            Redis::set("battle:$battleId:character:{$playerInstanceId}:equipped_soul_grid", json_encode([], JSON_UNESCAPED_UNICODE));
+            Log::error("Failed to build equipped SoulGrid from Postgres (non-fatal)", [
                 'character_id' => $characterId,
                 'instance_id' => $playerInstanceId,
                 'battle' => $battleId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // === NOVO: grava tick_skills (normalizadas) na instância a partir do Postgres ===
+        try {
+            $instanceTickSkillsKey = "battle:$battleId:character:{$playerInstanceId}:tick_skills";
+            $tickList = array_values($tickSkillsForInstance); // reindexa
+            Redis::set($instanceTickSkillsKey, json_encode($tickList, JSON_UNESCAPED_UNICODE));
+            Log::info("Tick skills saved to instance from Postgres-derived grid", [
+                'battle' => $battleId,
+                'character_id' => $characterId,
+                'instance_id' => $playerInstanceId,
+                'tick_skills_count' => count($tickList),
+            ]);
+        } catch (\Throwable $e) {
+            Redis::set("battle:$battleId:character:{$playerInstanceId}:tick_skills", json_encode([], JSON_UNESCAPED_UNICODE));
+            Log::error("Failed to save tick_skills to instance", [
+                'battle' => $battleId,
+                'character_id' => $characterId,
+                'instance_id' => $playerInstanceId,
                 'error' => $e->getMessage(),
             ]);
         }
@@ -148,23 +216,21 @@ class BattleWithMonsterHandler
         $activeSoul = $soulsArray[$preferredSlot] ?? null;
 
         if ($activeSoul) {
-            // Marca soul ativa no Redis usando instanceId
+            // marca active soul e grava as skills dessa soul (para uso imediato)
             Redis::set("battle:$battleId:character:{$playerInstanceId}:active_soul_id", $activeSoul['id']);
-
-            // Salva também as skills dessa soul para uso imediato usando instanceId
             Redis::set(
                 "battle:$battleId:character:{$playerInstanceId}:skills",
                 json_encode($activeSoul['skills'] ?? [], JSON_UNESCAPED_UNICODE)
             );
 
-            Log::info("Active soul preloaded for battle", [
+            Log::info("Active soul preloaded for battle (from Postgres)", [
                 'battle' => $battleId,
                 'character_id' => $characterId,
                 'instance_id' => $playerInstanceId,
                 'active_soul_id' => $activeSoul['id'],
             ]);
         } else {
-            // No active soul: ensure keys exist (empty array) to avoid race on CanUseSkillHandler
+            // garante que a chave de skills exista (array vazio)
             Redis::set("battle:$battleId:character:{$playerInstanceId}:skills", json_encode([], JSON_UNESCAPED_UNICODE));
         }
 
@@ -177,46 +243,44 @@ class BattleWithMonsterHandler
         }
         $monsterInstanceId = $maxMonsterInstance + 1;
 
-        // 7.1️⃣ Busca ou cria o monstro (model + stats relation)
+        // 7.1️⃣ Busca ou cria o monstro
         $monster = Monster::where('id', 1)->with('stats')->first();
         if (!$monster) {
             $monster = Monster::create([
                 'id' => 1,
-                'name'       => 'Goblin',
-                'type'       => 'goblin',
+                'name' => 'Goblin',
+                'type' => 'goblin',
             ]);
-
             $monster->stats()->create([
-                'hp'            => 1000,
-                'level'         => 1,
-                'strength'      => 12,
-                'intelligence'  => 6,
+                'hp' => 1000,
+                'level' => 1,
+                'strength' => 12,
+                'intelligence' => 6,
                 'defense_bonus' => 5,
-                'dexterity'     => 1,
-                'stamina'       => 25,
+                'dexterity' => 1,
+                'stamina' => 25,
             ]);
             $monster->load('stats');
         }
 
-        // 7.2️⃣ Monta payload do monstro com current_hp dentro de stats (ARRAY, não string)
+        // 7.2️⃣ Monta payload do monstro
         $monsterStats = $monster->stats ? $monster->stats->toArray() : [];
         $monsterStats['current_hp'] = $monsterStats['hp'] ?? 100;
         if (!isset($monsterStats['statuses']) || !is_array($monsterStats['statuses'])) $monsterStats['statuses'] = [];
 
         $monsterPayload = [
             'monster_id' => $monster->id,
-            'name'       => $monster->name,
-            'type'       => $monster->type,
+            'name' => $monster->name,
+            'type' => $monster->type,
             'instanceId' => (string)$monsterInstanceId,
-            'stats'      => $monsterStats,
+            'stats' => $monsterStats,
         ];
 
-        // 7.3️⃣ Salva monstro no Redis como JSON string
         Redis::hset("battle:$battleId:monsters", (string)$monsterInstanceId, json_encode($monsterPayload, JSON_UNESCAPED_UNICODE));
 
         $now = now()->timestamp;
 
-        // 7.4️⃣ Pré-carrega as Skills do monstro (similar ao SoulGrid) para uso rápido durante a batalha
+        // 7.4️⃣ Pré-carrega as Skills do monstro (mantive sua lógica, já carregando tick skills corretas)
         try {
             $monsterWithSkills = Monster::with('skills')->find($monster->id);
 
@@ -224,12 +288,11 @@ class BattleWithMonsterHandler
                 $skillsArray = $monsterWithSkills->skills->toArray();
             } else {
                 $attackSkill = Skill::find(1);
-                $waitSkill   = Skill::find(4);
-
-                $skillsArray = array_filter([$attackSkill, $waitSkill]);
+                $waitSkill = Skill::find(4);
+                $poisonTick = Skill::find(6); // opcional, se existir
+                $skillsArray = array_filter([$attackSkill, $waitSkill, $poisonTick]);
                 $skillsArray = array_map(fn($s) => $s->toArray(), $skillsArray);
-
-                Log::info("No skills found for monster; assigning Attack and Wait from DB", [
+                Log::info("No skills found for monster; assigning Attack/Wait (and optional ticks) from DB", [
                     'monster_instance_id' => $monsterInstanceId,
                     'monster_id' => $monster->id,
                     'battle' => $battleId,
@@ -240,6 +303,48 @@ class BattleWithMonsterHandler
                 "battle:$battleId:monster:{$monsterInstanceId}:skills",
                 json_encode($skillsArray, JSON_UNESCAPED_UNICODE)
             );
+
+            $monsterSkills = $skillsArray ?? [];
+            $monsterTickSkills = [];
+
+            // Carrega tick-skills referenciadas por skills do monstro
+            foreach ($monsterSkills as $ms) {
+                $tickSkillId = $ms['tick_skill_id'] ?? null;
+                if ($tickSkillId) {
+                    $tickModel = Skill::find((int)$tickSkillId);
+                    if ($tickModel) {
+                        $monsterTickSkills[$tickModel->id] = [
+                            'id' => $tickModel->id,
+                            'name' => $tickModel->name,
+                            'type' => $tickModel->type,
+                            'power' => $tickModel->power ?? 0,
+                            'duration' => $tickModel->duration,
+                            'stat' => $tickModel->stat,
+                            'tick_interval' => $tickModel->tick_interval,
+                            'tick_skill_id' => $tickModel->tick_skill_id ?? null,
+                            'tick_skill_flag' => $tickModel->tick_skill_flag ?? null,
+                        ];
+                    } else {
+                        Log::warning("Tick skill referenced by monster not found in DB", [
+                            'battle' => $battleId,
+                            'monster_instance_id' => $monsterInstanceId,
+                            'base_skill_id' => $ms['id'] ?? null,
+                            'tick_skill_id' => $tickSkillId,
+                        ]);
+                    }
+                }
+            }
+
+            Redis::set(
+                "battle:$battleId:monster:{$monsterInstanceId}:tick_skills",
+                json_encode(array_values($monsterTickSkills), JSON_UNESCAPED_UNICODE)
+            );
+
+            Log::info("Tick skills preloaded for monster", [
+                'battle' => $battleId,
+                'monster_instance_id' => $monsterInstanceId,
+                'tick_skills_count' => count($monsterTickSkills),
+            ]);
         } catch (\Throwable $e) {
             Log::error('Failed to preload monster skills for battle', [
                 'monster_instance_id' => $monsterInstanceId,
@@ -249,7 +354,7 @@ class BattleWithMonsterHandler
             ]);
         }
 
-        // 8️⃣ Inicializar stamina do monstro (salva JSON)
+        // 8️⃣ Inicializar stamina do monstro
         $monsterStaminaData = $this->staminaService->initializeStamina(
             $now,
             (int)($monsterStats['stamina'] ?? 0),
@@ -257,7 +362,7 @@ class BattleWithMonsterHandler
         );
         Redis::hset("battle:$battleId:stamina_data", "monster:{$monsterInstanceId}", json_encode($monsterStaminaData, JSON_UNESCAPED_UNICODE));
 
-        // 9️⃣ Inicializar stamina do personagem (salva JSON) — usa instanceId aqui
+        // 9️⃣ Inicializar stamina do personagem
         $characterStaminaData = $this->staminaService->initializeStamina(
             $now,
             (int)($stats['stamina'] ?? 0),
@@ -265,17 +370,17 @@ class BattleWithMonsterHandler
         );
         Redis::hset("battle:$battleId:stamina_data", "character:{$playerInstanceId}", json_encode($characterStaminaData, JSON_UNESCAPED_UNICODE));
 
-        // 🔟 Enviar update para o jogador — envia ARRAYS/OBJETOS, não strings JSON
+        // 🔟 Enviar update para o jogador
         $outPayload = [
-            'event'   => 'updateYourself',
+            'event' => 'updateYourself',
             'channel' => "character.{$characterId}",
-            'data'    => [
+            'data' => [
                 'players' => [
                     [
-                        'instanceId'  => (string)$playerInstanceId,
-                        'currentHp'   => (int)($stats['current_hp'] ?? ($stats['hp'] ?? 0)),
+                        'instanceId' => (string)$playerInstanceId,
+                        'currentHp' => (int)($stats['current_hp'] ?? ($stats['hp'] ?? 0)),
                         'staminaData' => $characterStaminaData,
-                        'stats'       => $stats,
+                        'stats' => $stats,
                         'soulSlotIndex' => $preferredSlot,
                     ]
                 ],
@@ -283,17 +388,15 @@ class BattleWithMonsterHandler
                     [
                         'instanceId' => (string)$monsterInstanceId,
                         'monster_id' => $monster->id,
-                        'name'       => $monster->name,
-                        'stats'      => $monsterStats,
+                        'name' => $monster->name,
+                        'stats' => $monsterStats,
                     ]
                 ],
                 'general' => ['globalMessages' => ["Battle's started!"]],
             ],
         ];
 
-        // Debug: confirma que stats são arrays no payload (não strings)
         Log::debug('BattleWithMonster OUT', $outPayload);
-
         $connection->send(json_encode($outPayload, JSON_UNESCAPED_UNICODE));
 
         // 11️⃣ Adiciona batalha ativa e log
@@ -301,13 +404,6 @@ class BattleWithMonsterHandler
         Log::info("Battle $battleId created and sent to character.$characterId (instance {$playerInstanceId}) for user $userId.");
     }
 
-    /**
-     * Normaliza um valor de "stats" que veio do Redis ou de outro lugar:
-     * - array -> retorna array
-     * - object -> cast para array
-     * - string JSON -> json_decode -> array
-     * - literal "Array" -> []
-     */
     protected function normalizeStatsValue(mixed $value): array
     {
         if (is_array($value)) return $value;
@@ -316,6 +412,7 @@ class BattleWithMonsterHandler
 
         $decoded = json_decode($value, true);
         if (is_array($decoded)) return $decoded;
+
         if ($value === 'Array') return [];
 
         $trimmed = trim($value, "\"'");
