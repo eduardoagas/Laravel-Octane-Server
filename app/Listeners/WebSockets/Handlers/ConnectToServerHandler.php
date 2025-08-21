@@ -76,7 +76,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
         ],
         6 => [ // ✅ PoisonTick
             'name' => 'PoisonTick',
-            'type' => 'debuff',
+            'type' => 'percentageDamage',
             'stat' => 'poison',
             'power' => 10,
             'duration' => 1,
@@ -89,15 +89,14 @@ class ConnectToServerHandler implements HandlesUnityEvent
         7 => [ // ✅ Poison skill inicial
             'name' => 'Poison',
             'type' => 'debuff',
-            'stat' => 'poison',
             'power' => 0,
             'duration' => null, //permanente
             'stamina_cost' => 12,
             'pre_delay' => 300,
             'post_delay' => 500,
             'level' => 3,
-            'tick_interval' => 5,
             'tick_skill_id' => 6, // referencia para o tick
+            'tick_interval' => 5,
         ]
     ];
 

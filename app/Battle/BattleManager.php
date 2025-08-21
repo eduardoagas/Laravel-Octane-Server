@@ -201,15 +201,44 @@ class BattleManager extends BattleManagerHelpers
                     ];
 
                     try {
-                        // usa BattleActions::executeAction em vez do SkillService direto
-                        $someoneDied = \App\Battle\BattleActions::executeAction(
-                            $resolvedCaster,     // passado por referência internamente
-                            $skillId,
-                            $targets,
-                            $battleId,
-                            $resolvedCaster['type'],
-                            $resolvedTarget['type']
-                        );
+                        // usa BattleActions
+                        $targetId = $targets['refInstanceId'];
+                        $targetKey = $targets['ref_key'];
+
+                        $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
+                        $targetRef = $targetJson ? json_decode($targetJson, true) : null;
+
+                        Log::channel('battle_debug')->info("[processBattleEffects] Executing action", [
+                            'battleId' => $battleId,
+                            'casterInstanceId' => $instanceId,
+                            'skillId' => $skillId,
+                            'targetKey' => $targetKey,
+                            'targetId' => $targetId,
+                        ]);
+
+                        $someoneDied = \App\Battle\BattleActions::executeAction($resolvedCaster, $skillId, $targetRef, $battleId, $resolvedCaster['type'], $targets['category']);
+
+                        // atualiza estado local com a "fresh" entidade do Redis
+                        $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
+                        if ($freshJson) {
+                            $fresh = json_decode($freshJson, true);
+                            if ($targetKey === 'monsters') {
+                                $monsters[$targetId] = $fresh;
+                            } else {
+                                $players[$targetId] = $fresh;
+                            }
+                        } else {
+                            Log::warning("[processBattleEffects] After applySkill, fresh entity missing in Redis", [
+                                'battleId' => $battleId,
+                                'targetKey' => $targetKey,
+                                'targetId' => $targetId
+                            ]);
+                        }
+
+                        if (!empty($someoneDied)) {
+                            // sinaliza que precisamos checar fim de batalha depois do loop
+                            $needCheckBattleEnd = true;
+                        }
 
                         Log::info("[BattleEffects] Applied debuff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} (key {$debuffsKey})", [
                             'battle' => $battleId,
@@ -217,11 +246,6 @@ class BattleManager extends BattleManagerHelpers
                             'instanceId' => $instanceId,
                             'field' => $field
                         ]);
-
-                        if (!empty($someoneDied)) {
-                            // sinaliza que precisamos checar fim de batalha depois do loop
-                            $needCheckBattleEnd = true;
-                        }
                     } catch (\Throwable $e) {
                         Log::error("[BattleEffects] Failed debuff tick skill {$skillId} for {$field}: " . $e->getMessage(), [
                             'battle' => $battleId,
@@ -318,20 +342,37 @@ class BattleManager extends BattleManagerHelpers
 
                     try {
                         // usa BattleActions
-                        $someoneDied = \App\Battle\BattleActions::executeAction(
-                            $resolvedCaster,
-                            $skillId,
-                            $targets,
-                            $battleId,
-                            $resolvedCaster['type'],
-                            $resolvedTarget['type']
-                        );
+                        $targetId = $targets['refInstanceId'];
+                        $targetKey = $targets['ref_key'];
 
-                        Log::info("[BattleEffects] Applied buff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} (key {$buffsKey})");
+                        $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
+                        $targetRef = $targetJson ? json_decode($targetJson, true) : null;
 
-                        if (!empty($someoneDied)) {
-                            // sinaliza que precisamos checar fim de batalha depois do loop
-                            $needCheckBattleEnd = true;
+                        Log::channel('battle_debug')->info("[processBattleEffects] Executing action", [
+                            'battleId' => $battleId,
+                            'casterInstanceId' => $instanceId,
+                            'skillId' => $skillId,
+                            'targetKey' => $targetKey,
+                            'targetId' => $targetId,
+                        ]);
+
+                        \App\Battle\BattleActions::executeAction($resolvedCaster, $skillId, $targetRef, $battleId, $resolvedCaster['type'], $targets['category']);
+
+                        // atualiza estado local com a "fresh" entidade do Redis
+                        $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
+                        if ($freshJson) {
+                            $fresh = json_decode($freshJson, true);
+                            if ($targetKey === 'monsters') {
+                                $monsters[$targetId] = $fresh;
+                            } else {
+                                $players[$targetId] = $fresh;
+                            }
+                        } else {
+                            Log::warning("[processBattleEffects] After applySkill, fresh entity missing in Redis", [
+                                'battleId' => $battleId,
+                                'targetKey' => $targetKey,
+                                'targetId' => $targetId
+                            ]);
                         }
                     } catch (\Throwable $e) {
                         Log::error("[BattleEffects] Failed buff tick skill {$skillId} for {$field}: " . $e->getMessage(), [
@@ -353,33 +394,8 @@ class BattleManager extends BattleManagerHelpers
             $processed = true;
         }
 
-        // Se foi sinalizado que alguém morreu, reconstrói players/monsters e checa fim da batalha
+
         if ($needCheckBattleEnd) {
-            // rebuild monsters
-            $monsters = [];
-            $monstersRaw = Redis::hgetall("battle:$battleId:monsters") ?: [];
-            foreach ($monstersRaw as $k => $json) {
-                $m = $json ? json_decode($json, true) : null;
-                if (!is_array($m)) continue;
-                if (!isset($m['instanceId'])) $m['instanceId'] = (string)$k;
-                $monsters[$k] = $m;
-            }
-
-            // rebuild players
-            $players = [];
-            $playersRaw = Redis::hgetall("battle:$battleId:characters_data") ?: [];
-            foreach ($playersRaw as $k => $json) {
-                $p = $json ? json_decode($json, true) : null;
-                if (!is_array($p)) continue;
-                if (!isset($p['instanceId'])) $p['instanceId'] = (string)$k;
-                $players[$k] = $p;
-            }
-
-            Log::info("[BattleEffects] someoneDied detected during effects processing for {$entityType}:{$instanceId}, checking battle end", [
-                'battle' => $battleId
-            ]);
-
-            // checa fim de batalha usando arrays reconstruídos
             $this->checkBattleEnd($battleId, $players, $monsters);
         }
 

@@ -195,7 +195,8 @@ class SkillService
             $skill['duration'],
             $skill['level'],
             $casterType,
-            $skill['tick_skill_id'] ?? null  // ✅ Adiciona o tick_skill_id aqui
+            $skill['tick_skill_id'] ?? null,  // ✅ Adiciona o tick_skill_id aqui
+            $skill['tick_interval'] ?? null,
         );
 
         $result = json_decode($resultJson, true);
