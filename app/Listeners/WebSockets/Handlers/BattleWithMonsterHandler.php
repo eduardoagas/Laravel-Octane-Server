@@ -42,9 +42,7 @@ class BattleWithMonsterHandler
         $stats = $this->normalizeStatsValue($characterRaw['stats'] ?? null);
         $stats['current_hp'] = $stats['hp'] ?? 0;
 
-        if (!isset($stats['statuses']) || !is_array($stats['statuses'])) {
-            $stats['statuses'] = [];
-        }
+
 
         $characterPayload = [
             'id' => $characterId,
@@ -266,7 +264,7 @@ class BattleWithMonsterHandler
         // 7.2️⃣ Monta payload do monstro
         $monsterStats = $monster->stats ? $monster->stats->toArray() : [];
         $monsterStats['current_hp'] = $monsterStats['hp'] ?? 100;
-        if (!isset($monsterStats['statuses']) || !is_array($monsterStats['statuses'])) $monsterStats['statuses'] = [];
+
 
         $monsterPayload = [
             'monster_id' => $monster->id,
