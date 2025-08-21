@@ -19,6 +19,9 @@ class Skill extends Model
         'tick_interval',
         'tick_skill_id',
         'tick_skill_flag',
+        'stackable',       // novo
+        'max_stacks',      // novo
+        'stack_behavior',  // novo
     ];
 
     public function souls()

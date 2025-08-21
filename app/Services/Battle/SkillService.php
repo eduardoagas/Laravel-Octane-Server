@@ -159,7 +159,7 @@ class SkillService
 
         $targetKey = ($targetType ?? 'character') === 'monster' ? 'monsters' : 'characters_data';
         $redisKey = "battle:$battleId:$targetKey";
-        $luaPath = storage_path("redis_scripts/battle_skill.lua");
+        $luaPath = storage_path("redis_scripts/battle_skill_indexed.lua"); // NOVO: novo script indexado
         $luaScript = file_get_contents($luaPath);
 
         // cálculo de power dependendo do type
@@ -183,6 +183,12 @@ class SkillService
             $power = $skill['power'] ?? 0;
         }
 
+        // recupera propriedades de stack do $skill (se existirem no model/array)
+        $stackable = !empty($skill['stackable']) ? '1' : '0';
+        $maxStacks = isset($skill['max_stacks']) ? (int)$skill['max_stacks'] : 1;
+        $stackBehavior = $skill['stack_behavior'] ?? 'add';
+
+        // executa script passando battleId e os novos parâmetros de stack
         $resultJson = Redis::eval(
             $luaScript,
             1,
@@ -195,10 +201,13 @@ class SkillService
             $skill['duration'],
             $skill['level'],
             $casterType,
-            $skill['tick_skill_id'] ?? null,  // ✅ Adiciona o tick_skill_id aqui
+            $skill['tick_skill_id'] ?? null,
             $skill['tick_interval'] ?? null,
+            $battleId,          // ARGV[11]
+            $stackable,         // ARGV[12]
+            $maxStacks,         // ARGV[13]
+            $stackBehavior      // ARGV[14]
         );
-
         $result = json_decode($resultJson, true);
 
         if (isset($result['error'])) {

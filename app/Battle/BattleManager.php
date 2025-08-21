@@ -96,18 +96,13 @@ class BattleManager extends BattleManagerHelpers
 
 
     /**
-     * Helper que processa buffs/debuffs de uma única entidade (character ou monster).
+     * Processa buffs/debuffs de uma única entidade (character ou monster).
+     * Agora: quando um efeito tem tick_skill_id e stacks > 1, repetimos a execução do tick
+     * tantas vezes quanto o número de stacks (nova política solicitada).
      *
-     * - $entityType: 'character' ou 'monster'
+     * - $entityType: 'character' | 'monster'
      * - $instanceId: instanceId na batalha
-     * - $stats: array decodificado de stats (pelo menos para compor o caster/target payloads)
-     */
-    /**
-     * Helper que processa buffs/debuffs de uma única entidade (character ou monster).
-     *
-     * - $entityType: 'character' ou 'monster'
-     * - $instanceId: instanceId na batalha
-     * - $stats: array decodificado de stats (pelo menos para compor o caster/target payloads)
+     * - $stats: array decodificado de stats (usado para compor payloads/resolver caster/target)
      */
     private function processEffectsForEntity(
         string $battleId,
@@ -163,6 +158,9 @@ class BattleManager extends BattleManagerHelpers
                 $data['duration'] = (int)$data['duration'] - 1;
                 if ($data['duration'] <= 0) {
                     Redis::hdel($debuffsKey, $field);
+                    // NOVO: removemos possível índice externo se existir (opcional)
+                    Redis::srem("battle:$battleId:debuff_index", $field);
+                    Redis::srem("battle:$battleId:debuff_index:instance:{$instanceId}", $field);
                     Log::info("[BattleEffects] Removed expired debuff {$field} from {$entityType} {$instanceId} (key {$debuffsKey})");
                     $processed = true;
                     continue;
@@ -201,46 +199,72 @@ class BattleManager extends BattleManagerHelpers
                     ];
 
                     try {
-                        // usa BattleActions
-                        $targetId = $targets['refInstanceId'];
-                        $targetKey = $targets['ref_key'];
+                        // === NOVO: se o efeito possui 'stacks', repetimos a execução do tick para cada stack ===
+                        // Se não existir, considera-se 1 stack.
+                        $maxStacks = 10; // limite seguro
+                        $stacks = min(max(1, (int)($data['stacks'] ?? 1)), $maxStacks);
+                        $someoneDiedAny = false;
 
-                        $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
-                        $targetRef = $targetJson ? json_decode($targetJson, true) : null;
+                        Log::info("[BattleEffects] Executing tick skill {$skillId} for {$stacks} stacks (field {$field})");
 
-                        Log::channel('battle_debug')->info("[processBattleEffects] Executing action", [
-                            'battleId' => $battleId,
-                            'casterInstanceId' => $instanceId,
-                            'skillId' => $skillId,
-                            'targetKey' => $targetKey,
-                            'targetId' => $targetId,
-                        ]);
+                        // recupera alvo fresco antes do loop para fornecer ao BattleActions;
+                        // depois de cada execução vamos buscar de novo a "fresh" entidade e propagar localmente.
+                        for ($i = 0; $i < $stacks; $i++) {
+                            // lê fresh target do Redis
+                            $targetId = $targets['refInstanceId'];
+                            $targetKey = $targets['ref_key'];
+                            $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
+                            $targetRef = $targetJson ? json_decode($targetJson, true) : null;
 
-                        $someoneDied = \App\Battle\BattleActions::executeAction($resolvedCaster, $skillId, $targetRef, $battleId, $resolvedCaster['type'], $targets['category']);
-
-                        // atualiza estado local com a "fresh" entidade do Redis
-                        $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
-                        if ($freshJson) {
-                            $fresh = json_decode($freshJson, true);
-                            if ($targetKey === 'monsters') {
-                                $monsters[$targetId] = $fresh;
-                            } else {
-                                $players[$targetId] = $fresh;
-                            }
-                        } else {
-                            Log::warning("[processBattleEffects] After applySkill, fresh entity missing in Redis", [
+                            Log::channel('battle_debug')->info("[processBattleEffects] Executing tick iteration", [
                                 'battleId' => $battleId,
+                                'caster' => $resolvedCaster,
+                                'skillId' => $skillId,
+                                'iteration' => $i + 1,
+                                'stacks' => $stacks,
                                 'targetKey' => $targetKey,
-                                'targetId' => $targetId
+                                'targetId' => $targetId,
                             ]);
+
+                            // Chama BattleActions::executeAction; retorna bool someoneDied
+                            $someoneDied = \App\Battle\BattleActions::executeAction(
+                                $resolvedCaster,     // passado por referência internamente
+                                $skillId,
+                                $targetRef,
+                                $battleId,
+                                $resolvedCaster['type'],
+                                $targets['category']
+                            );
+
+                            // após cada execução, atualiza o target fresco em arrays locais (se presente)
+                            $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
+                            if ($freshJson) {
+                                $fresh = json_decode($freshJson, true);
+                                if ($targetKey === 'monsters') {
+                                    $monsters[$targetId] = $fresh;
+                                } else {
+                                    $players[$targetId] = $fresh;
+                                }
+                            } else {
+                                Log::channel('battle_debug')->warning("[processBattleEffects] After tick applySkill, fresh entity missing in Redis", [
+                                    'battleId' => $battleId,
+                                    'targetKey' => $targetKey,
+                                    'targetId' => $targetId
+                                ]);
+                            }
+
+                            if (!empty($someoneDied)) {
+                                $someoneDiedAny = true;
+                            }
+
+                            // Se alguém morreu, ainda não checamos fim aqui (apenas sinalizamos)
                         }
 
-                        if (!empty($someoneDied)) {
-                            // sinaliza que precisamos checar fim de batalha depois do loop
+                        if ($someoneDiedAny) {
                             $needCheckBattleEnd = true;
                         }
 
-                        Log::info("[BattleEffects] Applied debuff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} (key {$debuffsKey})", [
+                        Log::info("[BattleEffects] Applied debuff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} (key {$debuffsKey}); stacks={$stacks}", [
                             'battle' => $battleId,
                             'entityType' => $entityType,
                             'instanceId' => $instanceId,
@@ -306,6 +330,9 @@ class BattleManager extends BattleManagerHelpers
                 $data['duration'] = (int)$data['duration'] - 1;
                 if ($data['duration'] <= 0) {
                     Redis::hdel($buffsKey, $field);
+                    // NOVO: remove índices associados (opcional)
+                    Redis::srem("battle:$battleId:buff_index", $field);
+                    Redis::srem("battle:$battleId:buff_index:instance:{$instanceId}", $field);
                     Log::info("[BattleEffects] Removed expired buff {$field} from {$entityType} {$instanceId} (key {$buffsKey})");
                     $processed = true;
                     continue;
@@ -341,39 +368,61 @@ class BattleManager extends BattleManagerHelpers
                     ];
 
                     try {
-                        // usa BattleActions
-                        $targetId = $targets['refInstanceId'];
-                        $targetKey = $targets['ref_key'];
+                        // === NOVO: repetir tick conforme stacks ===
+                        $stacks = max(1, (int)($data['stacks'] ?? 1));
+                        $someoneDiedAny = false;
 
-                        $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
-                        $targetRef = $targetJson ? json_decode($targetJson, true) : null;
+                        for ($i = 0; $i < $stacks; $i++) {
+                            $targetId = $targets['refInstanceId'];
+                            $targetKey = $targets['ref_key'];
+                            $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
+                            $targetRef = $targetJson ? json_decode($targetJson, true) : null;
 
-                        Log::channel('battle_debug')->info("[processBattleEffects] Executing action", [
-                            'battleId' => $battleId,
-                            'casterInstanceId' => $instanceId,
-                            'skillId' => $skillId,
-                            'targetKey' => $targetKey,
-                            'targetId' => $targetId,
-                        ]);
-
-                        \App\Battle\BattleActions::executeAction($resolvedCaster, $skillId, $targetRef, $battleId, $resolvedCaster['type'], $targets['category']);
-
-                        // atualiza estado local com a "fresh" entidade do Redis
-                        $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
-                        if ($freshJson) {
-                            $fresh = json_decode($freshJson, true);
-                            if ($targetKey === 'monsters') {
-                                $monsters[$targetId] = $fresh;
-                            } else {
-                                $players[$targetId] = $fresh;
-                            }
-                        } else {
-                            Log::warning("[processBattleEffects] After applySkill, fresh entity missing in Redis", [
+                            Log::channel('battle_debug')->info("[processBattleEffects] Executing buff tick iteration", [
                                 'battleId' => $battleId,
+                                'caster' => $resolvedCaster,
+                                'skillId' => $skillId,
+                                'iteration' => $i + 1,
+                                'stacks' => $stacks,
                                 'targetKey' => $targetKey,
-                                'targetId' => $targetId
+                                'targetId' => $targetId,
                             ]);
+
+                            \App\Battle\BattleActions::executeAction(
+                                $resolvedCaster,
+                                $skillId,
+                                $targetRef,
+                                $battleId,
+                                $resolvedCaster['type'],
+                                $targets['category']
+                            );
+
+                            // atualiza estado local com a "fresh" entidade do Redis
+                            $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
+                            if ($freshJson) {
+                                $fresh = json_decode($freshJson, true);
+                                if ($targetKey === 'monsters') {
+                                    $monsters[$targetId] = $fresh;
+                                } else {
+                                    $players[$targetId] = $fresh;
+                                }
+                            } else {
+                                Log::warning("[processBattleEffects] After applySkill, fresh entity missing in Redis", [
+                                    'battleId' => $battleId,
+                                    'targetKey' => $targetKey,
+                                    'targetId' => $targetId
+                                ]);
+                            }
+                            // Note: BattleActions::executeAction may signal death via its return,
+                            // but older code didn't capture return here for buffs; if you want to detect death,
+                            // capture its return and set $someoneDiedAny = true when true.
                         }
+
+                        if (!empty($someoneDiedAny)) {
+                            $needCheckBattleEnd = true;
+                        }
+
+                        Log::info("[BattleEffects] Applied buff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} (key {$buffsKey}); stacks={$stacks}");
                     } catch (\Throwable $e) {
                         Log::error("[BattleEffects] Failed buff tick skill {$skillId} for {$field}: " . $e->getMessage(), [
                             'battle' => $battleId,
@@ -394,8 +443,33 @@ class BattleManager extends BattleManagerHelpers
             $processed = true;
         }
 
-
+        // Se foi sinalizado que alguém morreu, reconstrói players/monsters e checa fim da batalha
         if ($needCheckBattleEnd) {
+            // rebuild monsters
+            $monsters = [];
+            $monstersRaw = Redis::hgetall("battle:$battleId:monsters") ?: [];
+            foreach ($monstersRaw as $k => $json) {
+                $m = $json ? json_decode($json, true) : null;
+                if (!is_array($m)) continue;
+                if (!isset($m['instanceId'])) $m['instanceId'] = (string)$k;
+                $monsters[$k] = $m;
+            }
+
+            // rebuild players
+            $players = [];
+            $playersRaw = Redis::hgetall("battle:$battleId:characters_data") ?: [];
+            foreach ($playersRaw as $k => $json) {
+                $p = $json ? json_decode($json, true) : null;
+                if (!is_array($p)) continue;
+                if (!isset($p['instanceId'])) $p['instanceId'] = (string)$k;
+                $players[$k] = $p;
+            }
+
+            Log::info("[BattleEffects] someoneDied detected during effects processing for {$entityType}:{$instanceId}, checking battle end", [
+                'battle' => $battleId
+            ]);
+
+            // checa fim de batalha usando arrays reconstruídos
             $this->checkBattleEnd($battleId, $players, $monsters);
         }
 
