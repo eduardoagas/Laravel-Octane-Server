@@ -186,7 +186,7 @@ class SkillService
         // recupera propriedades de stack do $skill (se existirem no model/array)
         $stackable = !empty($skill['stackable']) ? '1' : '0';
         $maxStacks = isset($skill['max_stacks']) ? (int)$skill['max_stacks'] : 1;
-        $stackBehavior = $skill['stack_behavior'] ?? 'add';
+        $stackBehavior = $skill['stack_behavior'] ?? 'refresh';
 
         // executa script passando battleId e os novos parâmetros de stack
         $resultJson = Redis::eval(

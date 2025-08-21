@@ -13,7 +13,7 @@ return new class extends Migration {
             $table->integer('max_stacks')->default(1)->after('stackable')
                 ->comment('Número máximo de stacks que podem ser aplicados');
             $table->enum('stack_behavior', ['add', 'refresh', 'replace'])
-                ->default('replace')
+                ->default('refresh')
                 ->after('max_stacks')
                 ->comment('Como o stack influencia a skill: add, refresh ou replace');
         });

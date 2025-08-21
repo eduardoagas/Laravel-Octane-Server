@@ -84,12 +84,12 @@ local function get_defense(stats_table, skillType)
 end
 
 -- NOVO: keys centrais + índices
-local debuffsHashKey = "battle:" .. battleId .. ":debuffs"
-local buffsHashKey   = "battle:" .. battleId .. ":buffs"
-local debuffIndexGlobal = "battle:" .. battleId .. ":debuff_index"
-local buffIndexGlobal   = "battle:" .. battleId .. ":buff_index"
-local function debuffInstanceIndex(inst) return "battle:" .. battleId .. ":debuff_index:instance:" .. inst end
-local function buffInstanceIndex(inst) return "battle:" .. battleId .. ":buff_index:instance:" .. inst end
+local debuffsHashKey = "battle:" .. targetKey .. ":debuffs"
+local buffsHashKey   = "battle:" .. targetKey .. ":buffs"
+local debuffIndexGlobal = "battle:" ..  targetKey .. ":debuff_index"
+local buffIndexGlobal   = "battle:" ..  targetKey .. ":buff_index"
+local function debuffInstanceIndex(inst) return "battle:" .. targetKey .. ":debuff_index:instance:" .. inst end
+local function buffInstanceIndex(inst) return "battle:" .. targetKey .. ":buff_index:instance:" .. inst end
 
 -- Internal: apply debuff (NOVO: writes to central hash + indices, supports stacking)
 local function apply_debuff(casterId, casterType, targetId, stat, power, duration, level)
