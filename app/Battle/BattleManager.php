@@ -95,15 +95,6 @@ class BattleManager extends BattleManagerHelpers
     }
 
 
-    /**
-     * Processa buffs/debuffs de uma única entidade (character ou monster).
-     * Agora: quando um efeito tem tick_skill_id e stacks > 1, repetimos a execução do tick
-     * tantas vezes quanto o número de stacks (nova política solicitada).
-     *
-     * - $entityType: 'character' | 'monster'
-     * - $instanceId: instanceId na batalha
-     * - $stats: array decodificado de stats (usado para compor payloads/resolver caster/target)
-     */
     private function processEffectsForEntity(
         string $battleId,
         string $entityType,
@@ -112,39 +103,20 @@ class BattleManager extends BattleManagerHelpers
     ): bool {
         $processed = false;
         $isCharacter = $entityType === 'character';
-        $entityPrefix = $isCharacter ? "character" : "monster";
+        $entityPrefix = $isCharacter ? "characters_data" : "monsters";
+
+        // BASE per-instance key (ex: battle:<id>:characters_data:<instanceId>)
         $baseKey = "battle:$battleId:{$entityPrefix}:{$instanceId}";
 
-        // --- Determine debuffs key: prefer per-instance, fallback to shared monsters:debuffs ---
-        $perInstanceDebuffsKey = $baseKey . ":debuffs";
-        $sharedMonstersDebuffsKey = "battle:$battleId:monsters:debuffs";
-        if ($isCharacter) {
-            $debuffsKey = $perInstanceDebuffsKey;
-            $useSharedDebuffs = false;
-        } else {
-            if (Redis::exists($perInstanceDebuffsKey)) {
-                $debuffsKey = $perInstanceDebuffsKey;
-                $useSharedDebuffs = false;
-            } else {
-                $debuffsKey = $sharedMonstersDebuffsKey;
-                $useSharedDebuffs = true;
-            }
-        }
+        // --- PER-INSTANCE keys (no fallback) ---
+        $debuffsKey = $baseKey . ":debuffs";
+        $buffsKey   = $baseKey . ":buffs";
 
         $debuffs = Redis::hgetall($debuffsKey) ?: [];
 
-        // sinaliza se após aplicar ticks precisamos checar fim de batalha
         $needCheckBattleEnd = false;
 
         foreach ($debuffs as $field => $json) {
-            // when using shared hash for monsters, only handle fields for this instance
-            if ($useSharedDebuffs) {
-                // fields format expected: "<instanceId>:<stat>:<casterId>"
-                if (strpos((string)$field, $instanceId . ':') !== 0) {
-                    continue; // not for this instance
-                }
-            }
-
             $data = json_decode($json, true);
             if (!is_array($data)) {
                 Redis::hdel($debuffsKey, $field);
@@ -153,21 +125,18 @@ class BattleManager extends BattleManagerHelpers
                 continue;
             }
 
-            // duration: only decrement if set and not null (permanent = null stays)
             if (isset($data['duration']) && $data['duration'] !== null) {
                 $data['duration'] = (int)$data['duration'] - 1;
                 if ($data['duration'] <= 0) {
                     Redis::hdel($debuffsKey, $field);
-                    // NOVO: removemos possível índice externo se existir (opcional)
-                    Redis::srem("battle:$battleId:{$entityPrefix}:debuff_index", $field);
-                    Redis::srem("battle:$battleId:{$entityPrefix}debuff_index:instance:{$instanceId}", $field);
+                    // remove instance index (keeps consistência per-instance)
+                    Redis::srem("battle:$battleId:{$entityPrefix}:debuff_index:instance:{$instanceId}", $field);
                     Log::info("[BattleEffects] Removed expired debuff {$field} from {$entityType} {$instanceId} (key {$debuffsKey})");
                     $processed = true;
                     continue;
                 }
             }
 
-            // tick logic (tick_count stored inside the debuff JSON)
             $tickCount = (int)($data['tick_count'] ?? 0);
             $interval = isset($data['tick_interval']) ? (int)$data['tick_interval'] : 1;
             $skillId = isset($data['tick_skill_id']) ? (int)$data['tick_skill_id'] : null;
@@ -179,18 +148,15 @@ class BattleManager extends BattleManagerHelpers
                     $casterId = $data['caster_id'] ?? null;
                     $casterType = $data['caster_type'] ?? null;
 
-                    // resolvedCaster/Target: monta payload esperado por BattleActions
                     $resolvedCaster = ($casterId && $casterType)
                         ? $this->resolveEntityForTick($battleId, (string)$casterType, (string)$casterId)
                         : $this->resolveEntityForTick($battleId, $entityType, $instanceId);
 
                     $resolvedTarget = $this->resolveEntityForTick($battleId, $entityType, $instanceId);
 
-                    // enriquece resolvedCaster/Target com 'name' (útil para logs e mensagens)
                     $this->enrichEntityWithName($battleId, $resolvedCaster);
                     $this->enrichEntityWithName($battleId, $resolvedTarget);
 
-                    // monta target simples no formato esperado por BattleActions (um único alvo)
                     $targetRefKey = $entityType === 'monster' ? 'monsters' : 'characters_data';
                     $targets = [
                         'ref_key' => $targetRefKey,
@@ -199,18 +165,11 @@ class BattleManager extends BattleManagerHelpers
                     ];
 
                     try {
-                        // === NOVO: se o efeito possui 'stacks', repetimos a execução do tick para cada stack ===
-                        // Se não existir, considera-se 1 stack.
-                        $maxStacks = 10; // limite seguro
+                        $maxStacks = 10;
                         $stacks = min(max(1, (int)($data['stacks'] ?? 1)), $maxStacks);
                         $someoneDiedAny = false;
 
-                        Log::info("[BattleEffects] Executing tick skill {$skillId} for {$stacks} stacks (field {$field})");
-
-                        // recupera alvo fresco antes do loop para fornecer ao BattleActions;
-                        // depois de cada execução vamos buscar de novo a "fresh" entidade e propagar localmente.
                         for ($i = 0; $i < $stacks; $i++) {
-                            // lê fresh target do Redis
                             $targetId = $targets['refInstanceId'];
                             $targetKey = $targets['ref_key'];
                             $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
@@ -226,9 +185,8 @@ class BattleManager extends BattleManagerHelpers
                                 'targetId' => $targetId,
                             ]);
 
-                            // Chama BattleActions::executeAction; retorna bool someoneDied
                             $someoneDied = \App\Battle\BattleActions::executeAction(
-                                $resolvedCaster,     // passado por referência internamente
+                                $resolvedCaster,
                                 $skillId,
                                 $targetRef,
                                 $battleId,
@@ -236,7 +194,6 @@ class BattleManager extends BattleManagerHelpers
                                 $targets['category']
                             );
 
-                            // após cada execução, atualiza o target fresco em arrays locais (se presente)
                             $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                             if ($freshJson) {
                                 $fresh = json_decode($freshJson, true);
@@ -256,15 +213,11 @@ class BattleManager extends BattleManagerHelpers
                             if (!empty($someoneDied)) {
                                 $someoneDiedAny = true;
                             }
-
-                            // Se alguém morreu, ainda não checamos fim aqui (apenas sinalizamos)
                         }
 
-                        if ($someoneDiedAny) {
-                            $needCheckBattleEnd = true;
-                        }
+                        if ($someoneDiedAny) $needCheckBattleEnd = true;
 
-                        Log::info("[BattleEffects] Applied debuff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} (key {$debuffsKey}); stacks={$stacks}", [
+                        Log::info("[BattleEffects] Applied debuff tick skill {$skillId} for {$field} on {$entityType} {$instanceId} (key {$debuffsKey}); stacks={$stacks}", [
                             'battle' => $battleId,
                             'entityType' => $entityType,
                             'instanceId' => $instanceId,
@@ -280,44 +233,20 @@ class BattleManager extends BattleManagerHelpers
                         ]);
                     }
 
-                    // reset tick counter after firing
                     $tickCount = 0;
                     $processed = true;
                 }
             }
 
             $data['tick_count'] = $tickCount;
-
-            // persist back to the same key we read from
             Redis::hset($debuffsKey, $field, json_encode($data, JSON_UNESCAPED_UNICODE));
             $processed = true;
         }
 
-        // --- BUFFS: same approach (per-instance key preferred, fallback to shared monsters:buffs) ---
-        $perInstanceBuffsKey = $baseKey . ":buffs";
-        $sharedMonstersBuffsKey = "battle:$battleId:monsters:buffs";
-        if ($isCharacter) {
-            $buffsKey = $perInstanceBuffsKey;
-            $useSharedBuffs = false;
-        } else {
-            if (Redis::exists($perInstanceBuffsKey)) {
-                $buffsKey = $perInstanceBuffsKey;
-                $useSharedBuffs = false;
-            } else {
-                $buffsKey = $sharedMonstersBuffsKey;
-                $useSharedBuffs = true;
-            }
-        }
-
+        // --- BUFFS (per-instance only) ---
         $buffs = Redis::hgetall($buffsKey) ?: [];
 
         foreach ($buffs as $field => $json) {
-            if ($useSharedBuffs) {
-                if (strpos((string)$field, $instanceId . ':') !== 0) {
-                    continue;
-                }
-            }
-
             $data = json_decode($json, true);
             if (!is_array($data)) {
                 Redis::hdel($buffsKey, $field);
@@ -330,8 +259,6 @@ class BattleManager extends BattleManagerHelpers
                 $data['duration'] = (int)$data['duration'] - 1;
                 if ($data['duration'] <= 0) {
                     Redis::hdel($buffsKey, $field);
-                    // NOVO: remove índices associados (opcional)
-                    Redis::srem("battle:$battleId:{$entityPrefix}:buff_index", $field);
                     Redis::srem("battle:$battleId:{$entityPrefix}:buff_index:instance:{$instanceId}", $field);
                     Log::info("[BattleEffects] Removed expired buff {$field} from {$entityType} {$instanceId} (key {$buffsKey})");
                     $processed = true;
@@ -356,7 +283,6 @@ class BattleManager extends BattleManagerHelpers
 
                     $resolvedTarget = $this->resolveEntityForTick($battleId, $entityType, $instanceId);
 
-                    // adiciona nome quando possível
                     $this->enrichEntityWithName($battleId, $resolvedCaster);
                     $this->enrichEntityWithName($battleId, $resolvedTarget);
 
@@ -368,7 +294,6 @@ class BattleManager extends BattleManagerHelpers
                     ];
 
                     try {
-                        // === NOVO: repetir tick conforme stacks ===
                         $stacks = max(1, (int)($data['stacks'] ?? 1));
                         $someoneDiedAny = false;
 
@@ -397,7 +322,6 @@ class BattleManager extends BattleManagerHelpers
                                 $targets['category']
                             );
 
-                            // atualiza estado local com a "fresh" entidade do Redis
                             $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                             if ($freshJson) {
                                 $fresh = json_decode($freshJson, true);
@@ -413,16 +337,11 @@ class BattleManager extends BattleManagerHelpers
                                     'targetId' => $targetId
                                 ]);
                             }
-                            // Note: BattleActions::executeAction may signal death via its return,
-                            // but older code didn't capture return here for buffs; if you want to detect death,
-                            // capture its return and set $someoneDiedAny = true when true.
                         }
 
-                        if (!empty($someoneDiedAny)) {
-                            $needCheckBattleEnd = true;
-                        }
+                        if (!empty($someoneDiedAny)) $needCheckBattleEnd = true;
 
-                        Log::info("[BattleEffects] Applied buff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} (key {$buffsKey}); stacks={$stacks}");
+                        Log::info("[BattleEffects] Applied buff tick skill {$skillId} for {$field} on {$entityType} {$instanceId} (key {$buffsKey}); stacks={$stacks}");
                     } catch (\Throwable $e) {
                         Log::error("[BattleEffects] Failed buff tick skill {$skillId} for {$field}: " . $e->getMessage(), [
                             'battle' => $battleId,
@@ -443,7 +362,6 @@ class BattleManager extends BattleManagerHelpers
             $processed = true;
         }
 
-        // Se foi sinalizado que alguém morreu, reconstrói players/monsters e checa fim da batalha
         if ($needCheckBattleEnd) {
             // rebuild monsters
             $monsters = [];
@@ -469,12 +387,12 @@ class BattleManager extends BattleManagerHelpers
                 'battle' => $battleId
             ]);
 
-            // checa fim de batalha usando arrays reconstruídos
             $this->checkBattleEnd($battleId, $players, $monsters);
         }
 
         return $processed;
     }
+
 
     public function finishBattle(string $battleId): void
     {
