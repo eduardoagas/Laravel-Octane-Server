@@ -49,7 +49,7 @@ class BattleManager
      */
     public function processBattleEffects(string $battleId): bool
     {
-        $skillService = app(\App\Services\Battle\SkillService::class);
+        // já não precisamos injetar SkillService aqui para a execução — BattleActions usa internamente
         $processedAny = false;
 
         // ------------- PROCESSA CHARACTERS (por instanceId) -------------
@@ -67,8 +67,7 @@ class BattleManager
                 $battleId,
                 'character',
                 $instanceId,
-                $charStats,
-                $skillService
+                $charStats
             );
 
             if ($processed) $processedAny = true;
@@ -85,8 +84,7 @@ class BattleManager
                 $battleId,
                 'monster',
                 (string)$monsterInstanceId,
-                $monsterStats,
-                $skillService
+                $monsterStats
             );
 
             if ($processed) $processedAny = true;
@@ -95,6 +93,14 @@ class BattleManager
         return $processedAny;
     }
 
+
+    /**
+     * Helper que processa buffs/debuffs de uma única entidade (character ou monster).
+     *
+     * - $entityType: 'character' ou 'monster'
+     * - $instanceId: instanceId na batalha
+     * - $stats: array decodificado de stats (pelo menos para compor o caster/target payloads)
+     */
     /**
      * Helper que processa buffs/debuffs de uma única entidade (character ou monster).
      *
@@ -106,8 +112,7 @@ class BattleManager
         string $battleId,
         string $entityType,
         string $instanceId,
-        array $stats,
-        \App\Services\Battle\SkillService $skillService
+        array $stats
     ): bool {
         $processed = false;
         $isCharacter = $entityType === 'character';
@@ -121,7 +126,6 @@ class BattleManager
             $debuffsKey = $perInstanceDebuffsKey;
             $useSharedDebuffs = false;
         } else {
-            // monster
             if (Redis::exists($perInstanceDebuffsKey)) {
                 $debuffsKey = $perInstanceDebuffsKey;
                 $useSharedDebuffs = false;
@@ -133,10 +137,13 @@ class BattleManager
 
         $debuffs = Redis::hgetall($debuffsKey) ?: [];
 
+        // sinaliza se após aplicar ticks precisamos checar fim de batalha
+        $needCheckBattleEnd = false;
+
         foreach ($debuffs as $field => $json) {
             // when using shared hash for monsters, only handle fields for this instance
             if ($useSharedDebuffs) {
-                // fields format expected: "<instanceId>:<stat>:<casterId>" (per your earlier pattern)
+                // fields format expected: "<instanceId>:<stat>:<casterId>"
                 if (strpos((string)$field, $instanceId . ':') !== 0) {
                     continue; // not for this instance
                 }
@@ -173,22 +180,47 @@ class BattleManager
                     $casterId = $data['caster_id'] ?? null;
                     $casterType = $data['caster_type'] ?? null;
 
+                    // resolvedCaster/Target: monta payload esperado por BattleActions
                     $resolvedCaster = ($casterId && $casterType)
                         ? $this->resolveEntityForTick($battleId, (string)$casterType, (string)$casterId)
                         : $this->resolveEntityForTick($battleId, $entityType, $instanceId);
 
                     $resolvedTarget = $this->resolveEntityForTick($battleId, $entityType, $instanceId);
 
+                    // enriquece resolvedCaster/Target com 'name' (útil para logs e mensagens)
+                    $this->enrichEntityWithName($battleId, $resolvedCaster);
+                    $this->enrichEntityWithName($battleId, $resolvedTarget);
+
+                    // monta target simples no formato esperado por BattleActions (um único alvo)
+                    $targetRefKey = $entityType === 'monster' ? 'monsters' : 'characters_data';
+                    $targets = [
+                        'ref_key' => $targetRefKey,
+                        'refInstanceId' => (string)$instanceId,
+                        'category' => $entityType === 'monster' ? 'monster' : 'character'
+                    ];
+
                     try {
-                        $skillService->applySkill(
-                            $resolvedCaster,
-                            $resolvedTarget,
-                            $battleId,
+                        // usa BattleActions::executeAction em vez do SkillService direto
+                        $someoneDied = \App\Battle\BattleActions::executeAction(
+                            $resolvedCaster,     // passado por referência internamente
                             $skillId,
+                            $targets,
+                            $battleId,
                             $resolvedCaster['type'],
                             $resolvedTarget['type']
                         );
-                        Log::info("[BattleEffects] Applied debuff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} (key {$debuffsKey})");
+
+                        Log::info("[BattleEffects] Applied debuff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} (key {$debuffsKey})", [
+                            'battle' => $battleId,
+                            'entityType' => $entityType,
+                            'instanceId' => $instanceId,
+                            'field' => $field
+                        ]);
+
+                        if (!empty($someoneDied)) {
+                            // sinaliza que precisamos checar fim de batalha depois do loop
+                            $needCheckBattleEnd = true;
+                        }
                     } catch (\Throwable $e) {
                         Log::error("[BattleEffects] Failed debuff tick skill {$skillId} for {$field}: " . $e->getMessage(), [
                             'battle' => $battleId,
@@ -199,6 +231,7 @@ class BattleManager
                         ]);
                     }
 
+                    // reset tick counter after firing
                     $tickCount = 0;
                     $processed = true;
                 }
@@ -271,16 +304,34 @@ class BattleManager
 
                     $resolvedTarget = $this->resolveEntityForTick($battleId, $entityType, $instanceId);
 
+                    // adiciona nome quando possível
+                    $this->enrichEntityWithName($battleId, $resolvedCaster);
+                    $this->enrichEntityWithName($battleId, $resolvedTarget);
+
+                    $targetRefKey = $entityType === 'monster' ? 'monsters' : 'characters_data';
+                    $targets = [
+                        'ref_key' => $targetRefKey,
+                        'refInstanceId' => (string)$instanceId,
+                        'category' => $entityType === 'monster' ? 'monster' : 'character'
+                    ];
+
                     try {
-                        $skillService->applySkill(
+                        // usa BattleActions
+                        $someoneDied = \App\Battle\BattleActions::executeAction(
                             $resolvedCaster,
-                            $resolvedTarget,
-                            $battleId,
                             $skillId,
+                            $targets,
+                            $battleId,
                             $resolvedCaster['type'],
                             $resolvedTarget['type']
                         );
+
                         Log::info("[BattleEffects] Applied buff tick skill {$skillId} for field {$field} on {$entityType} {$instanceId} (key {$buffsKey})");
+
+                        if (!empty($someoneDied)) {
+                            // sinaliza que precisamos checar fim de batalha depois do loop
+                            $needCheckBattleEnd = true;
+                        }
                     } catch (\Throwable $e) {
                         Log::error("[BattleEffects] Failed buff tick skill {$skillId} for {$field}: " . $e->getMessage(), [
                             'battle' => $battleId,
@@ -301,8 +352,68 @@ class BattleManager
             $processed = true;
         }
 
+        // Se foi sinalizado que alguém morreu, reconstrói players/monsters e checa fim da batalha
+        if ($needCheckBattleEnd) {
+            // rebuild monsters
+            $monsters = [];
+            $monstersRaw = Redis::hgetall("battle:$battleId:monsters") ?: [];
+            foreach ($monstersRaw as $k => $json) {
+                $m = $json ? json_decode($json, true) : null;
+                if (!is_array($m)) continue;
+                if (!isset($m['instanceId'])) $m['instanceId'] = (string)$k;
+                $monsters[$k] = $m;
+            }
+
+            // rebuild players
+            $players = [];
+            $playersRaw = Redis::hgetall("battle:$battleId:characters_data") ?: [];
+            foreach ($playersRaw as $k => $json) {
+                $p = $json ? json_decode($json, true) : null;
+                if (!is_array($p)) continue;
+                if (!isset($p['instanceId'])) $p['instanceId'] = (string)$k;
+                $players[$k] = $p;
+            }
+
+            Log::info("[BattleEffects] someoneDied detected during effects processing for {$entityType}:{$instanceId}, checking battle end", [
+                'battle' => $battleId
+            ]);
+
+            // checa fim de batalha usando arrays reconstruídos
+            $this->checkBattleEnd($battleId, $players, $monsters);
+        }
+
         return $processed;
     }
+
+
+    /**
+     * Adiciona 'name' ao payload de entidade (character/monster) se possível,
+     * lendo diretamente do Redis (ou deixando um valor padrão).
+     * Recebe array por referência.
+     */
+    private function enrichEntityWithName(string $battleId, array &$entity): void
+    {
+        if (!is_array($entity)) return;
+
+        $type = $entity['type'] ?? 'character';
+        $instanceId = (string)($entity['instanceId'] ?? '');
+
+        try {
+            if ($type === 'monster') {
+                $raw = Redis::hget("battle:$battleId:monsters", $instanceId);
+                $e = $raw ? json_decode($raw, true) : null;
+                $entity['name'] = $e['name'] ?? ($entity['name'] ?? 'Monstro');
+            } else {
+                $raw = Redis::hget("battle:$battleId:characters_data", $instanceId);
+                $e = $raw ? json_decode($raw, true) : null;
+                $entity['name'] = $e['name'] ?? ($entity['name'] ?? 'Jogador');
+            }
+        } catch (\Throwable $e) {
+            $entity['name'] = $entity['name'] ?? ($type === 'monster' ? 'Monstro' : 'Jogador');
+        }
+    }
+
+
 
 
     /**
