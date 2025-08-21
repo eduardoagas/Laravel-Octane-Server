@@ -130,7 +130,7 @@ class BattleManager extends BattleManagerHelpers
                 if ($data['duration'] <= 0) {
                     Redis::hdel($debuffsKey, $field);
                     // remove instance index (keeps consistência per-instance)
-                    Redis::srem("battle:$battleId:{$entityPrefix}:debuff_index:instance:{$instanceId}", $field);
+                    Redis::srem("battle:$battleId:{$entityPrefix}:{$instanceId}:debuff_index", $field);
                     Log::info("[BattleEffects] Removed expired debuff {$field} from {$entityType} {$instanceId} (key {$debuffsKey})");
                     $processed = true;
                     continue;
@@ -259,7 +259,7 @@ class BattleManager extends BattleManagerHelpers
                 $data['duration'] = (int)$data['duration'] - 1;
                 if ($data['duration'] <= 0) {
                     Redis::hdel($buffsKey, $field);
-                    Redis::srem("battle:$battleId:{$entityPrefix}:buff_index:instance:{$instanceId}", $field);
+                    Redis::srem("battle:$battleId:{$entityPrefix}:{$instanceId}:buff_index", $field);
                     Log::info("[BattleEffects] Removed expired buff {$field} from {$entityType} {$instanceId} (key {$buffsKey})");
                     $processed = true;
                     continue;
