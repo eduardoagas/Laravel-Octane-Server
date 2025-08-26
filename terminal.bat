@@ -1,0 +1,1 @@
+wt -p "Octane" ; new-tab -p "Reverb Debug" ; new-tab -p "Artisan Serve" ; new-tab -p "Redis CLI" ; new-tab -p "Workspace 1" ; new-tab -p "Workspace 2"

@@ -46,6 +46,37 @@ local stats = entity["stats"] or {}
 local someoneDied = false
 local result = {}
 
+
+-- PER-INSTANCE keys
+local debuffsHashKey = targetKey .. ":" .. tostring(targetId) .. ":debuffs"
+local buffsHashKey   = targetKey .. ":" .. tostring(targetId) .. ":buffs"
+local debuffIndexInstance = targetKey .. ":" .. tostring(targetId) .. ":debuff_index"
+local buffIndexInstance   = targetKey .. ":" .. tostring(targetId) .. ":buff_index"
+
+-- função auxiliar para aplicar deltas
+local function apply_effects(hashKey, statsTable)
+  local entries = redis.call("HGETALL", hashKey)
+  for i=1,#entries,2 do
+    local buffId = entries[i]
+    local buffData = cjson.decode(entries[i+1])
+
+    -- pega qual stat deve ser modificado
+    local statName = buffData["stat"]
+    local bonus    = tonumber(buffData["bonus"] or 0)
+
+    if statName and bonus ~= 0 then
+      -- inicializa se não existir
+      local current = tonumber(statsTable[statName] or 0)
+      statsTable[statName] = current + bonus
+    end
+  end
+end
+
+-- aplica buffs e debuffs sobre os stats originais
+apply_effects(buffsHashKey, stats)
+apply_effects(debuffsHashKey, stats)
+
+
 local _rand_counter_key = targetKey .. ":" .. targetId .. ":rand_counter"
 local function nano_random()
   local t = redis.call("TIME")
@@ -74,12 +105,6 @@ local function get_defense(stats_table, skillType)
     return tonumber(stats_table["mdefense"] or 0)
   end
 end
-
--- PER-INSTANCE keys
-local debuffsHashKey = targetKey .. ":" .. tostring(targetId) .. ":debuffs"
-local buffsHashKey   = targetKey .. ":" .. tostring(targetId) .. ":buffs"
-local debuffIndexInstance = targetKey .. ":" .. tostring(targetId) .. ":debuff_index"
-local buffIndexInstance   = targetKey .. ":" .. tostring(targetId) .. ":buff_index"
 
 -- resolve caster explicitly (no scanning)
 local function findCasterExplicit(cId, cType)

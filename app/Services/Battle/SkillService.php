@@ -122,6 +122,11 @@ class SkillService
         $casterStats = $caster['stats'] ?? [];
         if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
 
+        // aplica buffs/debuffs ativos do caster
+        $casterStats = $this->applyCasterBuffs($battleId, $casterType, $casterId, $casterStats);
+
+        if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
+
         $isTickSkill = !empty($skill['tick_skill_flag']);
         if (!$isTickSkill) {
             // Cooldown global apenas para jogadores
@@ -326,6 +331,38 @@ class SkillService
         }
 
         return null;
+    }
+
+    /**
+     * Aplica todos os buffs/debuffs ativos em um array de stats (somente memória).
+     * 
+     * @param string $battleId
+     * @param string $casterType 'character'|'monster'
+     * @param string $casterId
+     * @param array $stats
+     * @return array stats atualizados com buffs aplicados
+     */
+    private function applyCasterBuffs(string $battleId, string $casterType, string $casterId, array $stats): array
+    {
+        $buffsKey   = "battle:{$battleId}:{$casterType}:{$casterId}:buffs";
+        $debuffsKey = "battle:{$battleId}:{$casterType}:{$casterId}:debuffs";
+
+        // função interna para processar hash JSON
+        $applyEffects = function (string $hashKey, array &$statsArr) {
+            $entries = Redis::hgetall($hashKey);
+            foreach ($entries as $field => $json) {
+                $data = json_decode($json, true);
+                if (!isset($data['stat'], $data['bonus'])) continue;
+                $statName = $data['stat'];
+                $bonus    = (int)($data['bonus'] ?? 0);
+                $statsArr[$statName] = ($statsArr[$statName] ?? 0) + $bonus;
+            }
+        };
+
+        $applyEffects($buffsKey, $stats);
+        $applyEffects($debuffsKey, $stats);
+
+        return $stats;
     }
 
     /**
