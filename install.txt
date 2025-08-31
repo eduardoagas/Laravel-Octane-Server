@@ -1,0 +1,17 @@
+after php and composer... (before composer install)
+sudo apt install php8.3-xml php8.3-curl -y
+
+
+#para o reveb
+sail artisan reverb:install
+sail composer update
+
+#para o octane: (para poder usar -watch)
+sudo apt update
+sudo apt install nodejs npm -y
+sudo npm install -g chokidar
+npm install chokidar --save-dev
+
+#vite
+sail npm install
+sail npm run build
