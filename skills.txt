@@ -23,7 +23,7 @@
             'id' => 2,
             'name' => 'Raise Defense',
             'type' => 'buff',
-            'stat' => 'physical_defense_bonus',
+            'stat' => 'defense',
             'bonus' => 5,
             'duration' => 3,
             'stamina_cost' => 10,
