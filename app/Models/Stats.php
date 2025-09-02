@@ -16,12 +16,6 @@ class Stats extends Model
         'dexterity',
         'luck',
         'wisdom',
-        'strength_bonus',
-        'intelligence_bonus',
-        'vitality_bonus',
-        'dexterity_bonus',
-        'luck_bonus',
-        'wisdom_bonus',
         'nstatus_resistance',
         'nstats_potency',
         'burn_resistance',
@@ -50,8 +44,6 @@ class Stats extends Model
         'pvp_resistance',
         'pve_damage',
         'pve_resistance',
-        'physical_damage_bonus',
-        'magical_damage_bonus',
         'healing_potency',
         'recover_potency',
         'fire_resistance',
@@ -69,8 +61,8 @@ class Stats extends Model
         'dex_break_resistance',
         'def_break_resistance',
         'mdef_break_resistance',
-        'defense_bonus',
-        'mdefense_bonus',
+        'physical_defense',
+        'magical_defense',
         'damage_break_resistance',
         'mdamage_break_resistance',
         'critical_chance',
@@ -83,13 +75,13 @@ class Stats extends Model
         'armor_break_resistance',
         'shield_break_resistance',
         'acc_break_resistance'
-
     ];
 
     public function character()
     {
         return $this->belongsTo(Character::class);
     }
+
     public function monster()
     {
         return $this->belongsTo(Monster::class);

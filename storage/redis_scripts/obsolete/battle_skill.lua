@@ -72,9 +72,9 @@ end
 
 local function get_defense(stats_table, skillType)
     if skillType == "physical" then
-        return tonumber(stats_table["pdefense"] or 0)
+        return tonumber(stats_table["physical_defense"] or 0)
     else
-        return tonumber(stats_table["mdefense"] or 0)
+        return tonumber(stats_table["magical_defense"] or 0)
     end
 end
 

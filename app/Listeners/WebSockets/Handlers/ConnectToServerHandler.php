@@ -36,7 +36,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
         2 => [
             'name' => 'Raise Defense',
             'type' => 'buff',
-            'stat' => 'physical_defense_bonus',
+            'stat' => 'physical_defense',
             'power' => 2,
             'duration' => 3,
             'stamina_cost' => 10,
