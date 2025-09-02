@@ -6,8 +6,77 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 
 class BattleManagerHelpers
+
 {
-/**
+
+    /**
+     * Remove ou decrementa stacks de um efeito (buff/debuff) de uma entidade
+     *
+     * @param string $battleId
+     * @param string $entityType "character" ou "monster"
+     * @param string $instanceId
+     * @param string $effectType "buff" ou "debuff"
+     * @param string $field Nome da key do efeito (ex: targetId:stat:casterId)
+     * @param int $stacksToRemove Quantos stacks remover (default 1)
+     * @param bool $forceDelete Ignora stacks e remove direto (ex: skill Remedy)
+     */
+    protected function handleEffectRemoval(
+        string $battleId,
+        string $entityType,
+        string $instanceId,
+        string $effectType,
+        string $field,
+        int $stacksToRemove = 1,
+        bool $forceDelete = false
+    ): void {
+        $entityPrefix = $entityType === 'character' ? 'characters_data' : 'monsters';
+        $hashKey = "battle:$battleId:{$entityPrefix}:{$instanceId}:" . ($effectType === 'buff' ? 'buffs' : 'debuffs');
+        $indexKey = "battle:$battleId:{$entityPrefix}:{$instanceId}:" . ($effectType === 'buff' ? 'buff_index' : 'debuff_index');
+        $ackKey   = "battle:$battleId:acks";
+
+        $json = Redis::hget($hashKey, $field);
+        if (!$json) return;
+
+        $data = json_decode($json, true);
+        if (!is_array($data)) {
+            Redis::hdel($hashKey, $field);
+            Redis::srem($indexKey, $field);
+            return;
+        }
+
+        if ($forceDelete) {
+            $data['stacks'] = 0;
+        } else {
+            $data['stacks'] = max(0, ($data['stacks'] ?? 1) - $stacksToRemove);
+        }
+
+        if ($data['stacks'] <= 0) {
+            Redis::hdel($hashKey, $field);
+            Redis::srem($indexKey, $field);
+        } else {
+            // Mantém o efeito com stacks atualizados
+            $data['duration'] = $data['duration'] ?? null; // opcional: resetar duração ou manter
+            Redis::hset($hashKey, $field, json_encode($data, JSON_UNESCAPED_UNICODE));
+        }
+
+        // Registrar ACK
+        $ackId = "{$effectType}_remove:{$entityType}:{$instanceId}:{$field}";
+        $payload = [
+            'data' => [
+                'ackId' => $ackId,
+                'stacks' => $data['stacks'] ?? 0,
+                'note' => null,
+            ],
+            //'type' => "{$effectType}_remove",
+            //'timestamp' => time(),
+        ];
+        Redis::hset($ackKey, $ackId, json_encode($payload, JSON_UNESCAPED_UNICODE));
+
+        Log::info("[BattleAcks] Registered ACK {$ackId}", ['payload' => $payload]);
+        Log::info("[BattleEffects] Removed/updated {$effectType} {$field} from {$entityType} {$instanceId}");
+    }
+
+    /**
      * Adiciona 'name' ao payload de entidade (character/monster) se possível,
      * lendo diretamente do Redis (ou deixando um valor padrão).
      * Recebe array por referência.
@@ -70,7 +139,7 @@ class BattleManagerHelpers
             ];
         }
     }
-     public function updateLastUpdate(string $battleId): void
+    public function updateLastUpdate(string $battleId): void
     {
         Redis::set("battle:$battleId:last_update", time());
     }
@@ -188,5 +257,4 @@ class BattleManagerHelpers
 
         return $targets;
     }
-
 }

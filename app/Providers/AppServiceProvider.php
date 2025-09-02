@@ -16,7 +16,15 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $battleManager = new BattleManager();
-
+        Octane::tick('battle-state-ticker', function () use ($battleManager) {
+            $battleIds = $battleManager->getActiveBattles();
+            foreach ($battleIds as $battleId) {
+                $hasActions = $battleManager->processBattleStateSync($battleId);
+                if ($hasActions) {
+                    \Illuminate\Support\Facades\Log::info("[BattleStateTicker] Processed state syncs for battle $battleId");
+                }
+            }
+        }, 0.9);
         // === Processa ações de jogadores a cada 2 segundos ===
         Octane::tick('battle-users-ticker', function () use ($battleManager) {
             $battleIds = $battleManager->getActiveBattles();

@@ -23,6 +23,7 @@ class UnityEventDispatcher
             'can_use_skill' => \App\Listeners\WebSockets\Handlers\CanUseSkillHandler::class,
             'skill_in_execution' => \App\Listeners\WebSockets\Handlers\SkillInExecutionHandler::class,
             'can_change_soul' => \App\Listeners\WebSockets\Handlers\CanChangeSoulHandler::class,
+            'battle_ack_received' => \App\Listeners\WebSockets\Handlers\BattleAckHandler::class,
             'soul_change_in_execution' => \App\Listeners\WebSockets\Handlers\SoulChangeInExecutionHandler::class,
             'subscribeConfirmed' => \App\Listeners\WebSockets\Handlers\SubscribeConfirmedHandler::class,
             // adicionar os demais aqui...

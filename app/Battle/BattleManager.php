@@ -128,10 +128,8 @@ class BattleManager extends BattleManagerHelpers
             if (isset($data['duration']) && $data['duration'] !== null) {
                 $data['duration'] = (int)$data['duration'] - 1;
                 if ($data['duration'] <= 0) {
-                    Redis::hdel($debuffsKey, $field);
-                    // remove instance index (keeps consistência per-instance)
-                    Redis::srem("battle:$battleId:{$entityPrefix}:{$instanceId}:debuff_index", $field);
-                    Log::info("[BattleEffects] Removed expired debuff {$field} from {$entityType} {$instanceId} (key {$debuffsKey})");
+                    // usa o handler para decrementar/remover corretamente considerando stacks
+                    $this->handleEffectRemoval($battleId, $entityType, $instanceId, "debuff", $field);
                     $processed = true;
                     continue;
                 }
@@ -258,9 +256,7 @@ class BattleManager extends BattleManagerHelpers
             if (isset($data['duration']) && $data['duration'] !== null) {
                 $data['duration'] = (int)$data['duration'] - 1;
                 if ($data['duration'] <= 0) {
-                    Redis::hdel($buffsKey, $field);
-                    Redis::srem("battle:$battleId:{$entityPrefix}:{$instanceId}:buff_index", $field);
-                    Log::info("[BattleEffects] Removed expired buff {$field} from {$entityType} {$instanceId} (key {$buffsKey})");
+                    $this->handleEffectRemoval($battleId, $entityType, $instanceId, "buff", $field);
                     $processed = true;
                     continue;
                 }
@@ -427,6 +423,30 @@ class BattleManager extends BattleManagerHelpers
             }
         }
     }
+
+    public function processBattleStateSync(string $battleId): void
+    {
+        $ackKey = "battle:$battleId:acks";
+        $pending = Redis::hgetall($ackKey) ?: [];
+
+        foreach ($pending as $ackId => $json) {
+            $payload = json_decode($json, true);
+            if (!$payload) {
+                Redis::hdel($ackKey, $ackId);
+                continue;
+            }
+
+            // 🔥 Aqui você faz o broadcast para o cliente
+            BattleBroadcaster::broadcastToBattle($battleId, $payload, 'battle-state');
+
+            Log::info("[BattleAcks] Broadcast ack event for {$ackId}", ['payload' => $payload]);
+
+            // 👇 Mantém no Redis até receber o ACK do cliente
+            // O listener de ACK (quando o cliente responder) deve dar:
+            // Redis::hdel($ackKey, $ackId);
+        }
+    }
+
 
 
 
