@@ -53,26 +53,26 @@ class BattleManagerHelpers
         if ($data['stacks'] <= 0) {
             Redis::hdel($hashKey, $field);
             Redis::srem($indexKey, $field);
+            // Registrar ACK
+            $ackId = "{$effectType}_remove:{$entityType}:{$instanceId}:{$field}";
+            $payload = [
+                'ackId' => $ackId,
+                'stacks' => $data['stacks'] ?? 0,
+                'note' => null,
+
+                //'type' => "{$effectType}_remove",
+                //'timestamp' => time(),
+            ];
+            Redis::hset($ackKey, $ackId, json_encode($payload, JSON_UNESCAPED_UNICODE));
+
+            Log::info("[BattleAcks] Registered ACK {$ackId}", ['payload' => $payload]);
         } else {
             // Mantém o efeito com stacks atualizados
             $data['duration'] = $data['duration'] ?? null; // opcional: resetar duração ou manter
             Redis::hset($hashKey, $field, json_encode($data, JSON_UNESCAPED_UNICODE));
         }
 
-        // Registrar ACK
-        $ackId = "{$effectType}_remove:{$entityType}:{$instanceId}:{$field}";
-        $payload = [
-            'data' => [
-                'ackId' => $ackId,
-                'stacks' => $data['stacks'] ?? 0,
-                'note' => null,
-            ],
-            //'type' => "{$effectType}_remove",
-            //'timestamp' => time(),
-        ];
-        Redis::hset($ackKey, $ackId, json_encode($payload, JSON_UNESCAPED_UNICODE));
 
-        Log::info("[BattleAcks] Registered ACK {$ackId}", ['payload' => $payload]);
         Log::info("[BattleEffects] Removed/updated {$effectType} {$field} from {$entityType} {$instanceId}");
     }
 

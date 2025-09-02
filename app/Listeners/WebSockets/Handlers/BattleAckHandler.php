@@ -19,12 +19,10 @@ class BattleAckHandler implements HandlesUnityEvent
 {
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
     {
-        $ackId = $payload['data']['ackId'] ?? null;
 
-        if (!$ackId) {
-            $connection->send(json_encode(['error' => 'AckId não fornecido']));
-            return;
-        }
+        Log::channel('battle_debug')->info('[BATTLE ACK HANDLER] payload recebido', $payload);
+        $ackId = $payload['data']['ackId'] ?? null;
+        Log::channel('battle_debug')->info("[BATTLE ACK HANDLER]" . $ackId);
 
         // Recupera sessão
         $session = Redis::hgetall("session:$token");
@@ -32,7 +30,7 @@ class BattleAckHandler implements HandlesUnityEvent
         $characterId = $session['character_id'] ?? null;
 
         if (!$battleId || !$characterId) {
-            $connection->send(json_encode(['error' => 'Sessão inválida ou incompleta']));
+            //$connection->send(json_encode(['error' => 'Sessão inválida ou incompleta']));
             Log::warning("[AckHandler] Sessão inválida", compact('battleId', 'characterId'));
             return;
         }
