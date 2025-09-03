@@ -14,6 +14,23 @@ use App\Listeners\WebSockets\Contracts\HandlesUnityEvent;
 class ConnectToServerHandler implements HandlesUnityEvent
 {
 
+    private static array $defaultConsumables = [
+        [
+            'name'        => 'Health Potion',
+            'description' => 'Restores 50 HP',
+            'effect_type' => 'heal',
+            'effect_value' => 50,
+            'quantity'    => 5,
+        ],
+        [
+            'name'        => 'Stamina Tonic',
+            'description' => 'Restores 30 Stamina',
+            'effect_type' => 'stamina',
+            'effect_value' => 30,
+            'quantity'    => 3,
+        ],
+    ];
+
     private static array $defaultSkills = [
         0 => [
             'name' => 'Attack',
@@ -215,6 +232,42 @@ class ConnectToServerHandler implements HandlesUnityEvent
             // === 3. Cria inventários vazios ===
             $character->soulInventory()->create();
             $character->soulGridInventory()->create();
+            $consumablesInventory = $character->consumablesInventory()->create();
+
+            // === 3a. Cria o BattlePack inicial ===
+            $battlePack = $character->battlePack()->create([
+                'max_slots' => 4,
+            ]);
+            // === 3b. Adiciona consumíveis iniciais ao inventário ===
+            $equippedSlots = [
+                'Health Potion' => 0,
+                'Stamina Tonic'   => 1,
+            ];
+
+            foreach (self::$defaultConsumables as $data) {
+                $consumable = \App\Models\Consumable::firstOrCreate(
+                    ['name' => $data['name']],
+                    [
+                        'description'  => $data['description'],
+                        'effect_type'  => $data['effect_type'],
+                        'effect_value' => $data['effect_value'],
+                    ]
+                );
+
+                // cria o item no inventário
+                $item = $consumablesInventory->items()->create([
+                    'consumable_id' => $consumable->id,
+                    'quantity'      => $data['quantity'],
+                ]);
+
+                // se estiver nos que devem ser equipados, cria slot no battlepack
+                if (isset($equippedSlots[$data['name']])) {
+                    $battlePack->slots()->create([
+                        'consumable_item_id' => $item->id,
+                        'slot_index'         => $equippedSlots[$data['name']],
+                    ]);
+                }
+            }
 
             // === 4. Cria Skills iniciais no DB, se não existirem ===
             $this->createDefaultSkills();

@@ -37,9 +37,19 @@ class Character extends Model
         return $this->hasOne(SoulGridInventory::class);
     }
 
+    public function consumablesInventory()
+    {
+        return $this->hasOne(ConsumablesInventory::class);
+    }
+
     public function soulInventory()
     {
         return $this->hasOne(SoulInventory::class);
+    }
+
+    public function battlePack()
+    {
+        return $this->hasOne(BattlePack::class);
     }
 }
 
