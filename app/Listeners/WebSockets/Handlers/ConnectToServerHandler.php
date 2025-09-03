@@ -153,6 +153,16 @@ class ConnectToServerHandler implements HandlesUnityEvent
 
         $character->load('stats'); // garante stats carregadas
 
+        // --- 1️⃣ Atualiza stats + soul grid ---
+        $characterSync = new CharacterSyncHandler();
+        $characterSync->handle($character->id, $connection);
+
+        // --- 2️⃣ Atualiza battlepack ---
+        $battlePackHandler = new BattlePackUpdateHandler();
+        $battlePackHandler->handle($character->id, $connection);
+
+        // Opcional: enviar um log final
+        Log::info("Conexão inicial completa: CharacterSync + BattlePack enviados", ['character_id' => $character->id]);
 
         // ===== preparar stats =====
         $statsArray = $character->stats ? $character->stats->toArray() : [];
