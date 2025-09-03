@@ -40,7 +40,7 @@ class BattlePackUpdateHandler
             'event' => 'updateYourselfWorld',
             'channel' => "character.{$characterId}",
             'data' => [
-                'battlepack' => $slotsArray,
+                'battlepack' => [ 'slots' => $slotsArray ],
             ],
         ];
 
