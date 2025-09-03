@@ -72,17 +72,38 @@ class CharacterSyncHandler
         $instanceTickSkillsKey = "character:{$characterId}:tick_skills";
         Redis::set($instanceTickSkillsKey, json_encode(array_values($tickSkillsForInstance), JSON_UNESCAPED_UNICODE));
 
+        $normalizedStats = $this->normalizeStatsValue($stats);
+        //$normalizedSoulsArray = $this->normalizeStatsValue($soulsArray);
         // Payload
         $payload = [
-            'event' => 'updateYourself',
+            'event' => 'updateYourselfWorld',
             'channel' => "character.{$characterId}",
             'data' => [
                 'stats' => $stats,
                 'equipped_soul_grid' => $soulsArray,
-            ],
+
+            ]
         ];
 
         $connection->send(json_encode($payload, JSON_UNESCAPED_UNICODE));
         Log::info("CharacterSyncHandler: payload enviado", ['character_id' => $characterId]);
+    }
+
+    protected function normalizeStatsValue(mixed $value): array
+    {
+        if (is_array($value)) return $value;
+        if (is_object($value)) return (array)$value;
+        if (!is_string($value) || $value === '') return [];
+
+        $decoded = json_decode($value, true);
+        if (is_array($decoded)) return $decoded;
+
+        if ($value === 'Array') return [];
+
+        $trimmed = trim($value, "\"'");
+        $decoded2 = json_decode($trimmed, true);
+        if (is_array($decoded2)) return $decoded2;
+
+        return [];
     }
 }

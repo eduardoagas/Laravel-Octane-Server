@@ -37,7 +37,7 @@ class BattlePackUpdateHandler
 
         // Payload
         $payload = [
-            'event' => 'updateYourself',
+            'event' => 'updateYourselfWorld',
             'channel' => "character.{$characterId}",
             'data' => [
                 'battlepack' => $slotsArray,
