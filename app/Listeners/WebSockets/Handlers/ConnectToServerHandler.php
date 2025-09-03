@@ -50,14 +50,6 @@ class ConnectToServerHandler implements HandlesUnityEvent
 
         $character->load('stats');
 
-        // --- Atualiza stats + soul grid via handler ---
-        (new CharacterSyncHandler())->handle($character->id, $connection);
-
-        // --- Atualiza battlepack via handler ---
-        (new BattlePackUpdateHandler())->handle($character->id, $connection);
-
-        Log::info("Conexão inicial completa: CharacterSync + BattlePack enviados", ['character_id' => $character->id]);
-
         // --- Salva sessão mínima no Redis ---
         Redis::hset("session:$token", 'character_id', (string)$character->id);
         Redis::hmset("character_session:{$character->id}", [
@@ -66,11 +58,18 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'name'    => (string)$character->name,
             'stats'   => json_encode($character->stats ? $character->stats->toArray() : [], JSON_UNESCAPED_UNICODE),
         ]);
+
+        // --- Atualiza stats + soul grid via handler ---
+        (new CharacterSyncHandler())->handle($character->id, $connection);
+
+        // --- Atualiza battlepack via handler ---
+        (new BattlePackUpdateHandler())->handle($character->id, $connection);
+
         // --- Agora podemos montar o payload 'subscribeMe' para Unity ---
         $characterPayload = [
             'id'    => $character->id,
             'name'  => $character->name,
-            'stats' => $character->stats ? $character->stats->toArray() : [],
+            //'stats' => $character->stats ? $character->stats->toArray() : [],
         ];
 
         // Monta payload final
@@ -122,16 +121,6 @@ class ConnectToServerHandler implements HandlesUnityEvent
             // --- Helpers ---
             (new CharacterHelpers())->setupConsumables($consumablesInventory, $battlePack);
             (new CharacterHelpers())->setupSkillsAndSouls($character);
-
-            // --- Salva character session no Redis ---
-            $statsArray = $character->stats ? $character->stats->toArray() : [];
-            Redis::hmset("character_session:{$character->id}", [
-                'id'      => $character->id,
-                'user_id' => $character->user_id,
-                'name'    => $character->name,
-                'stats'   => json_encode($statsArray, JSON_UNESCAPED_UNICODE),
-            ]);
-
             return $character;
         });
     }
