@@ -13,6 +13,70 @@ use App\Battle\BattleActions as BattleBattleActions;
 
 class BattleManager extends BattleManagerHelpers
 {
+
+    public function processBattlePendingSkills(string $battleId): bool
+    {
+        $key = "battle:{$battleId}:pending_skills";
+        $entries = Redis::hgetall($key);
+
+        if (!$entries) {
+            return false;
+        }
+
+        $now = now()->timestamp;
+        $processed = false;
+        $someoneDiedAny = false;
+
+        foreach ($entries as $field => $json) {
+            $event = json_decode($json, true);
+            if (!$event || !isset($event['ready_at'])) continue;
+
+            if ($now >= $event['ready_at']) {
+                if ($event['phase'] === 'pre_delay') {
+                    $event['phase'] = 'animation';
+                    $event['ready_at'] = $now + (int)($event['animation_time'] / 1000);
+                    Redis::hset($key, $field, json_encode($event));
+
+                    $this->notifyBattle($battleId, 'animation', $event);
+                    $processed = true;
+                } elseif ($event['phase'] === 'animation') {
+                    $someoneDied = $this->finalizeSkillCast($battleId, $event);
+                    if ($someoneDied) {
+                        $someoneDiedAny = true;
+                    }
+                    Redis::hdel($key, $field);
+                    $processed = true;
+                }
+            }
+        }
+
+        if ($someoneDiedAny) {
+            // rebuild monsters
+            $monsters = [];
+            foreach (Redis::hgetall("battle:$battleId:monsters") ?: [] as $k => $json) {
+                $m = $json ? json_decode($json, true) : null;
+                if (!is_array($m)) continue;
+                if (!isset($m['instanceId'])) $m['instanceId'] = (string)$k;
+                $monsters[$k] = $m;
+            }
+
+            // rebuild players
+            $players = [];
+            foreach (Redis::hgetall("battle:$battleId:characters_data") ?: [] as $k => $json) {
+                $p = $json ? json_decode($json, true) : null;
+                if (!is_array($p)) continue;
+                if (!isset($p['instanceId'])) $p['instanceId'] = (string)$k;
+                $players[$k] = $p;
+            }
+
+            Log::info("[BattleEffects] someoneDied detected, checking battle end", ['battle' => $battleId]);
+            $this->checkBattleEnd($battleId, $players, $monsters);
+        }
+
+        return $processed;
+    }
+
+
     /* public function createBattle(string $battleId, array $battleData): void
     {
         Log::info("Creating battle $battleId with data:", ['battleData' => $battleData]);

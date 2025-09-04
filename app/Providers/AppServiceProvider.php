@@ -58,6 +58,16 @@ class AppServiceProvider extends ServiceProvider
             }
         }, 1.0);
 
+        // === Processa skills pendentes ===
+        Octane::tick('battle-skills-ticker', function () use ($battleManager) {
+            $battleIds = $battleManager->getActiveBattles();
+            foreach ($battleIds as $battleId) {
+                $processed = $battleManager->processBattlePendingSkills($battleId);
+                if ($processed) {
+                    \Illuminate\Support\Facades\Log::info("[BattleSkillsTicker] Processed skills for battle $battleId");
+                }
+            }
+        }, 0.2);
         // === Limpa batalhas antigas a cada 10 segundos ===
         /*Octane::tick('battle-cleanup-ticker', function () use ($battleManager) {
             $battleManager->cleanupOldBattles(3600);

@@ -3,7 +3,9 @@
 namespace App\Battle;
 
 use Illuminate\Support\Facades\Log;
+use App\Services\Battle\SkillService;
 use Illuminate\Support\Facades\Redis;
+use App\Services\Battle\BattleBroadcaster;
 
 class BattleManagerHelpers
 
@@ -75,6 +77,217 @@ class BattleManagerHelpers
 
         Log::info("[BattleEffects] Removed/updated {$effectType} {$field} from {$entityType} {$instanceId}");
     }
+
+    protected function notifyBattle(string $battleId, string $stage, array $context = []): void
+    {
+        $globalMessages = [];
+        $actionInfoUse = '';
+        $actionInfoResult = '';
+
+        switch ($stage) {
+            case 'pre_delay':
+                $actionInfoUse = "{$context['caster_type']} {$context['caster_id']} começou a conjurar skill {$context['skill_id']}";
+                $globalMessages[] = "Skill {$context['skill_id']} em preparação";
+                break;
+
+            case 'animation':
+                $actionInfoUse = "{$context['caster_type']} {$context['caster_id']} está animando skill {$context['skill_id']}";
+                $globalMessages[] = "Skill {$context['skill_id']} entrou na fase de animação";
+                break;
+
+            case 'result':
+                // aqui você pode reaproveitar a lógica do executeAction para montar mensagens
+                $actionInfoUse = $context['actionInfoUse'] ?? '';
+                $actionInfoResult = $context['actionInfoResult'] ?? '';
+                $globalMessages = $context['globalMessages'] ?? [];
+                break;
+
+            case 'error':
+                $globalMessages = $context['errors'] ?? ["Erro inesperado"];
+                break;
+        }
+
+        $updatePayload = [
+            'players' => $context['players'] ?? [],
+            'enemies' => $context['enemies'] ?? [],
+            'general' => [
+                'actionInfoUse' => $actionInfoUse,
+                'actionInfoResult' => $actionInfoResult,
+                'globalMessages' => $globalMessages,
+            ],
+        ];
+
+        BattleBroadcaster::broadcastToBattle($battleId, $updatePayload, 'updateYourself');
+
+        Log::channel('battle_debug')->info("[notifyBattle] Broadcast stage={$stage}", [
+            'battleId' => $battleId,
+            'context' => $context,
+        ]);
+    }
+
+    protected function finalizeSkillCast(string $battleId, array $event): bool
+    {
+        $skillService = new SkillService();
+        $globalMessages = [];
+        $allResults = [];
+        $someoneDied = false;
+
+        $caster = $event['caster'] ?? null;
+        $targets = $event['targets'] ?? [];
+        $casterType = $event['caster_type'] ?? 'character';
+        $targetType = $event['target_type'] ?? 'character';
+        $skillId = $event['skill_id'] ?? null;
+
+        if (!$caster || !$skillId || empty($targets)) {
+            $this->notifyBattle($battleId, 'error', ['errors' => ['Dados inválidos para finalizar skill']]);
+            return false;
+        }
+
+        $targetsList = is_array($targets) && isset($targets[0]) ? $targets : [$targets];
+
+        $staminaUpdates = [];
+        $casterCurrentStamina = null;
+
+        foreach ($targetsList as &$target) {
+            // Aplica skill
+            $result = $skillService->applySkill($caster, $target, $battleId, $skillId, $casterType, $targetType);
+
+            // Atualiza stamina do caster se retornado
+            if (array_key_exists('current_stamina', $result) && $result['current_stamina'] !== null) {
+                $casterCurrentStamina = $result['current_stamina'];
+            }
+
+            // Atualiza stamina para payload
+            if (isset($result['used_stamina_total'])) {
+                $resCasterId = (string)($result['caster_id'] ?? '');
+                if ($resCasterId !== '') {
+                    $staminaUpdates[$resCasterId] = [
+                        'type' => $casterType,
+                        'used_stamina_total' => (float)$result['used_stamina_total'],
+                        'current_stamina' => array_key_exists('current_stamina', $result) ? $result['current_stamina'] : null,
+                    ];
+                }
+            }
+
+            $targetName = $target['name'] ?? ($target['username'] ?? 'Desconhecido');
+            $targetTypeStr = ($targetType ?? 'character') === 'monster' ? 'Monstro' : 'Jogador';
+            $actionInfoUse = "{$casterType} {$caster['instanceId']} usou skill {$skillId}";
+            $actionInfoResult = '';
+
+            // Mensagens de resultado
+            if (isset($result['damage_dealt'])) {
+                $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu dano de {$result['damage_dealt']}";
+            } elseif (isset($result['healed_amount'])) {
+                $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu cura de {$result['healed_amount']}";
+            } elseif (isset($result['buff_applied'])) {
+                $buff = $result['buff_applied'];
+                $buffValue = $buff['bonus'] ?? ($buff['power'] ?? 0);
+                $buffDuration = $buff['duration'] ?? '∞';
+                $buffStat = $buff['stat'] ?? 'unknown';
+                $actionInfoResult = "Buff aplicado: +{$buffValue} {$buffStat} por {$buffDuration} turnos";
+            } elseif (isset($result['debuff_applied'])) {
+                $debuff = $result['debuff_applied'];
+                $debuffPower = $debuff['power'] ?? 0;
+                $debuffDuration = $debuff['duration'] ?? '∞';
+                $debuffStat = $debuff['stat'] ?? 'unknown';
+                $actionInfoResult = "Debuff aplicado em {$targetName}: -{$debuffStat} ({$debuffPower}) por {$debuffDuration} turnos";
+                $globalMessages[] = "⚡ Debuff de {$debuffStat} aplicado com sucesso em {$targetName}!";
+            } elseif (!empty($result['debuff_failed'])) {
+                $chance = $result['debuff_chance'] ?? null;
+                $roll = $result['debuff_roll'] ?? null;
+                $actionInfoResult = "Debuff falhou em {$targetName}";
+                $globalMessages[] = "❌ Debuff em {$targetName} falhou (chance: " . round(($chance ?? 0) * 100, 1) . "%, roll: {$roll})";
+            }
+
+            if (!empty($result['someoneDied']) || !empty($result['target_died'])) {
+                $globalMessages[] = "{$targetName} morreu!";
+                $someoneDied = true;
+            }
+
+            $allResults[] = [
+                'actionInfoUse' => $actionInfoUse,
+                'actionInfoResult' => $actionInfoResult
+            ];
+        }
+
+        // Monta payloads de players
+        $playersPayload = [];
+        foreach (Redis::hgetall("battle:$battleId:characters_data") as $playerId => $playerJson) {
+            $playerData = is_string($playerJson) ? json_decode($playerJson, true) ?? [] : $playerJson;
+            $playerStats = $playerData['stats'] ?? [];
+            if (is_string($playerStats)) $playerStats = json_decode($playerStats, true) ?: [];
+
+            $playerPayload = [
+                'instanceId' => (string)$playerId,
+                'currentHp' => (int)($playerStats['current_hp'] ?? 0),
+            ];
+
+            $playerIdKey = (string)$playerId;
+            if (isset($staminaUpdates[$playerIdKey]) && $staminaUpdates[$playerIdKey]['type'] === 'character') {
+                $stRaw = Redis::hget("battle:$battleId:stamina_data", "character:$playerIdKey");
+                $stParsed = is_string($stRaw) ? json_decode($stRaw, true) ?? [] : $stRaw;
+
+                $playerPayload['staminaData'] = [
+                    'initial_stamina' => (float)($stParsed['initial_stamina'] ?? 0),
+                    'start_time' => (int)($stParsed['start_time'] ?? 0),
+                    'used_stamina_total' => (float)$staminaUpdates[$playerIdKey]['used_stamina_total'],
+                    'current_stamina' => array_key_exists('current_stamina', $staminaUpdates[$playerIdKey]) ? $staminaUpdates[$playerIdKey]['current_stamina'] : null,
+                ];
+            }
+
+            $playersPayload[] = $playerPayload;
+        }
+
+        // Monta payloads de monstros
+        $enemiesPayload = [];
+        foreach (Redis::hgetall("battle:$battleId:monsters") as $monsterId => $monsterJson) {
+            $monsterData = is_string($monsterJson) ? json_decode($monsterJson, true) ?? [] : $monsterJson;
+            $monsterStats = $monsterData['stats'] ?? [];
+            if (is_string($monsterStats)) $monsterStats = json_decode($monsterStats, true) ?: [];
+
+            $monsterPayload = [
+                'instanceId' => (string)$monsterId,
+                'isAlive' => ($monsterStats['current_hp'] ?? 0) > 0,
+            ];
+
+            $monsterIdKey = (string)$monsterId;
+            if (isset($staminaUpdates[$monsterIdKey]) && $staminaUpdates[$monsterIdKey]['type'] === 'monster') {
+                $stRaw = Redis::hget("battle:$battleId:stamina_data", "monster:$monsterIdKey");
+                $stParsed = is_string($stRaw) ? json_decode($stRaw, true) ?? [] : $stRaw;
+
+                $monsterPayload['staminaData'] = [
+                    'initial_stamina' => (float)($stParsed['initial_stamina'] ?? 0),
+                    'start_time' => (int)($stParsed['start_time'] ?? 0),
+                    'used_stamina_total' => (float)$staminaUpdates[$monsterIdKey]['used_stamina_total'],
+                    'current_stamina' => array_key_exists('current_stamina', $staminaUpdates[$monsterIdKey]) ? $staminaUpdates[$monsterIdKey]['current_stamina'] : null,
+                ];
+            }
+
+            $enemiesPayload[] = $monsterPayload;
+        }
+
+        // Notifica clientes
+        $this->notifyBattle($battleId, 'result', [
+            'players' => $playersPayload,
+            'enemies' => $enemiesPayload,
+            'actionInfoUse' => implode(' | ', array_column($allResults, 'actionInfoUse')),
+            'actionInfoResult' => implode(' | ', array_column($allResults, 'actionInfoResult')),
+            'globalMessages' => $globalMessages,
+        ]);
+
+        // Log depurativo de stamina
+        if ($casterCurrentStamina !== null) {
+            Log::channel('battle_debug')->info("[finalizeSkillCast] Stamina atual do caster", [
+                'instanceId' => $caster['instanceId'] ?? '',
+                'current_stamina' => $casterCurrentStamina
+            ]);
+        }
+
+        // Retorna se alguém morreu
+        return $someoneDied;
+    }
+
+
 
     /**
      * Adiciona 'name' ao payload de entidade (character/monster) se possível,

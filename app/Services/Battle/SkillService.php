@@ -127,6 +127,20 @@ class SkillService
 
         if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
 
+        // 2️⃣ Consome stamina e cooldown (mesmo que antes)
+        $requiredStamina = (int)($skill['stamina_cost'] ?? 0);
+        $currentStamina = $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType);
+        if ($currentStamina < $requiredStamina) {
+            throw new InsufficientStaminaException("Stamina insuficiente");
+        }
+
+        $currentAfterConsumption = $this->staminaService->consumeStamina(
+            $battleId,
+            $casterId,
+            $requiredStamina,
+            $casterType
+        );
+
         $isTickSkill = !empty($skill['tick_skill_flag']);
         if (!$isTickSkill) {
             // Cooldown global apenas para jogadores
@@ -247,6 +261,79 @@ class SkillService
             'debuff_roll' => $result['debuff_roll'] ?? null,
             'debuff_failed' => $result['debuff_failed'] ?? null,
         ];
+    }
+
+    public function startSkillCast(
+        array $caster,
+        ?array $target,
+        string $battleId,
+        int $skillId,
+        string $casterType,
+        string $targetType
+    ): void {
+        $casterId = (string)$caster['instanceId'];
+
+        // 1️⃣ Busca a skill no Redis ou fallback
+        $skill = $this->findSkillInRedis($battleId, $casterType, $casterId, $skillId);
+        if (!$skill && isset(self::$skills[$skillId])) {
+            $skill = self::$skills[$skillId];
+        }
+        if (!$skill) {
+            throw new \InvalidArgumentException("Skill {$skillId} not found");
+        }
+
+        // 1️⃣ Busca a skill no Redis para este caster
+        $skill = $this->findSkillInRedis($battleId, $casterType, $casterId, $skillId);
+
+        // 2️⃣ Fallback para array estático em memória (se existir)
+        if (!$skill) {
+            if (isset(self::$skills[$skillId])) {
+                $skill = self::$skills[$skillId];
+                Log::warning("[SkillService] Skill {$skillId} não encontrada no Redis, usando fallback em memória.");
+            } else {
+                throw new \InvalidArgumentException("Skill {$skillId} not found");
+            }
+        }
+
+        // garante que atributos do caster venham de stats
+        $casterStats = $caster['stats'] ?? [];
+        if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
+
+        // aplica buffs/debuffs ativos do caster
+        $casterStats = $this->applyCasterBuffs($battleId, $casterType, $casterId, $casterStats);
+
+        // 2️⃣ Consome stamina e cooldown (mesmo que antes)
+        $requiredStamina = (int)($skill['stamina_cost'] ?? 0);
+        $currentStamina = $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType);
+        if ($currentStamina < $requiredStamina) {
+            throw new InsufficientStaminaException("Stamina insuficiente");
+        }
+
+
+
+        $this->checkCooldown($battleId, $casterId, $skill['post_delay'] ?? 0);
+
+        if (!$target) {
+            throw new \InvalidArgumentException("Target is required for skill {$skill['name']}");
+        }
+
+        // 3️⃣ Cria evento pendente no Redis
+        $event = [
+            'caster_id' => $casterId,
+            'caster_type' => $casterType,
+            'skill_id' => $skillId,
+            'target_id' => $target['instanceId'],
+            'target_type' => $targetType,
+            'phase' => 'pre_delay',
+            'ready_at' => now()->timestamp + (int)(($skill['pre_delay'] ?? 0) / 1000),
+            'pre_delay' => $skill['pre_delay'] ?? 0,
+            'animation_time' => $skill['animation_time'] ?? 0,
+            'post_delay' => $skill['post_delay'] ?? 0,
+            'lock_time' => $skill['lock_time'] ?? 0,
+        ];
+
+        $key = "battle:{$battleId}:pending_skills";
+        Redis::hset($key, "{$casterType}:{$casterId}", json_encode($event));
     }
 
     /**
