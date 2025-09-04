@@ -17,6 +17,7 @@
 -- 12 = stackable ("1" ou "0")
 -- 13 = max_stacks
 -- 14 = stack_behavior ("add"|"refresh"|"replace")
+-- ARGV[15] = lock_time (em segundos, opcional)
 
 local targetKey = KEYS[1]
 local skillType = ARGV[1] or ""
@@ -33,6 +34,7 @@ local battleId = ARGV[11] or ""
 local stackableFlag = (ARGV[12] == "1") and true or false
 local maxStacks = tonumber(ARGV[13]) or 1
 local stackBehavior = ARGV[14] or "add"
+local lockTime = tonumber(ARGV[15]) or 0
 
 -- read target entity directly from provided targetKey (NO FALLBACK)
 local raw = redis.call("HGET", targetKey, targetId)
@@ -75,7 +77,6 @@ end
 -- aplica buffs e debuffs sobre os stats originais
 apply_effects(buffsHashKey, stats)
 apply_effects(debuffsHashKey, stats)
-
 
 local _rand_counter_key = targetKey .. ":" .. targetId .. ":rand_counter"
 local function nano_random()
@@ -356,6 +357,26 @@ elseif skillType == "debuff" then
 
 else
   return cjson.encode({ error = "Unknown skill type: " .. tostring(skillType) })
+end
+
+-- === Lock handling ===
+-- lockTime vem em milissegundos (int)
+if lockTime > 0 then
+    local lockKey = "skill_lock:" .. battleId .. ":" .. targetId
+    local currentLock = tonumber(redis.call("GET", lockKey) or 0)
+
+    -- tempo atual em segundos inteiros
+    local t = redis.call("TIME")
+    local now = tonumber(t[1])
+
+    -- converte lockTime de ms para segundos e arredonda para cima
+    local lockSeconds = math.ceil(lockTime / 1000)
+    local newLock = now + lockSeconds
+
+    if newLock > currentLock then
+        redis.call("SET", lockKey, newLock)
+        redis.call("EXPIRE", lockKey, lockSeconds * 2)
+    end
 end
 
 -- persist updated entity back to the provided targetKey (no fallback)

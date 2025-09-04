@@ -31,10 +31,22 @@ class BattleManager extends BattleManagerHelpers
             $event = json_decode($json, true);
             if (!$event || !isset($event['ready_at'])) continue;
 
+            $casterId = $event['caster_id'] ?? null;
+            $lockKey = "skill_lock:$battleId:$casterId";
+
+            // Se houver lock ativo no caster, postergar skill
+            $lockUntil = (int)(Redis::get($lockKey) ?? 0);
+            if ($lockUntil > $now) {
+                // postergar para o timestamp do lock
+                $event['ready_at'] = $lockUntil;
+                Redis::hset($key, $field, json_encode($event));
+                continue;
+            }
+
             if ($now >= $event['ready_at']) {
                 if ($event['phase'] === 'pre_delay') {
                     $event['phase'] = 'animation';
-                    $event['ready_at'] = $now + (int)($event['animation_time'] / 1000);
+                    $event['ready_at'] = $now + (int)($event['pre_delay'] / 1000);
                     Redis::hset($key, $field, json_encode($event));
 
                     $this->notifyBattle($battleId, 'animation', $event);

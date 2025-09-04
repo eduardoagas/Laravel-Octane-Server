@@ -225,7 +225,8 @@ class SkillService
             $battleId,          // ARGV[11]
             $stackable,         // ARGV[12]
             $maxStacks,         // ARGV[13]
-            $stackBehavior      // ARGV[14]
+            $stackBehavior,     // ARGV[14]
+            $skill['lock_time'] ?? null,
         );
         $result = json_decode($resultJson, true);
 
