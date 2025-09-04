@@ -368,6 +368,15 @@ class BattleWithMonsterHandler
         );
         Redis::hset("battle:$battleId:stamina_data", "character:{$playerInstanceId}", json_encode($characterStaminaData, JSON_UNESCAPED_UNICODE));
 
+        //set your instance id
+        $syiPayload = [
+            'event' => 'setYourInstanceId',
+            'channel' => "character.{$characterId}",
+            'data' => ['instanceId' => (string)$playerInstanceId]
+        ];
+        Log::debug('Set Your Instance Id OUT', $syiPayload);
+        $connection->send(json_encode($syiPayload, JSON_UNESCAPED_UNICODE));
+
         // 🔟 Enviar update para o jogador
         $outPayload = [
             'event' => 'updateYourself',
