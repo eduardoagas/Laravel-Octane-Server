@@ -106,7 +106,7 @@ class BattleManagerHelpers
                 $globalMessages = $context['errors'] ?? ["Erro inesperado"];
                 break;
         }
-
+        Log::info("Context de NotifyBattle = " . json_encode($context));
         $updatePayload = [
             'players' => $context['players'] ?? [],
             'enemies' => $context['enemies'] ?? [],
@@ -127,37 +127,115 @@ class BattleManagerHelpers
 
     protected function finalizeSkillCast(string $battleId, array $event): bool
     {
-        $skillService = new SkillService();
+        $skillService = new \App\Services\Battle\SkillService();
         $globalMessages = [];
         $allResults = [];
         $someoneDied = false;
 
-        $caster = $event['caster'] ?? null;
-        $targets = $event['targets'] ?? [];
+        // --- Extrai dados mínimos do evento ---
+        $casterInstanceId = (string)($event['caster_id'] ?? '');
         $casterType = $event['caster_type'] ?? 'character';
-        $targetType = $event['target_type'] ?? 'character';
         $skillId = $event['skill_id'] ?? null;
+        $targetType = $event['target_type'] ?? 'character';
 
-        if (!$caster || !$skillId || empty($targets)) {
+        if ($casterInstanceId === '' || !$skillId || (empty($event['target_id']) && empty($event['targets']))) {
             $this->notifyBattle($battleId, 'error', ['errors' => ['Dados inválidos para finalizar skill']]);
+            Log::channel('battle_debug')->warning("[finalizeSkillCast] Evento inválido", ['battle' => $battleId, 'event' => $event]);
             return false;
         }
 
-        $targetsList = is_array($targets) && isset($targets[0]) ? $targets : [$targets];
+        // --- Função auxiliar para carregar entity do Redis pela instanceId e tipo ---
+        $loadEntity = function (string $battleId, string $type, string $instanceId): ?array {
+            $key = ($type === 'monster') ? "battle:{$battleId}:monsters" : "battle:{$battleId}:characters_data";
+            $raw = Redis::hget($key, $instanceId);
+            if (!$raw) return null;
+            $decoded = is_string($raw) ? json_decode($raw, true) : $raw;
+            return is_array($decoded) ? $decoded : null;
+        };
+
+        // --- Carrega caster completo ---
+        $caster = $loadEntity($battleId, $casterType, $casterInstanceId);
+        if (!$caster) {
+            $this->notifyBattle($battleId, 'error', ['errors' => ['Caster não encontrado ao finalizar skill']]);
+            Log::channel('battle_debug')->warning("[finalizeSkillCast] Caster não encontrado", [
+                'battle' => $battleId,
+                'caster_type' => $casterType,
+                'caster_instance' => $casterInstanceId,
+                'event' => $event
+            ]);
+            return false;
+        }
+
+        // --- Normaliza targets list (pode vir target_id ou targets) ---
+        $targetsList = [];
+        if (!empty($event['target_id'])) {
+            $targetsList[] = (string)$event['target_id'];
+        } elseif (!empty($event['targets']) && is_array($event['targets'])) {
+            // aceita array de ids ou de objects
+            foreach ($event['targets'] as $t) {
+                if (is_string($t) || is_int($t)) $targetsList[] = (string)$t;
+                elseif (is_array($t) && isset($t['instanceId'])) $targetsList[] = (string)$t['instanceId'];
+            }
+        }
+
+        if (empty($targetsList)) {
+            $this->notifyBattle($battleId, 'error', ['errors' => ['Targets inválidos ao finalizar skill']]);
+            Log::channel('battle_debug')->warning("[finalizeSkillCast] Targets vazios ou inválidos", [
+                'battle' => $battleId,
+                'event' => $event
+            ]);
+            return false;
+        }
 
         $staminaUpdates = [];
         $casterCurrentStamina = null;
 
-        foreach ($targetsList as &$target) {
-            // Aplica skill
-            $result = $skillService->applySkill($caster, $target, $battleId, $skillId, $casterType, $targetType);
+        // --- Para cada target: carrega do Redis, aplica skill e monta mensagens ---
+        foreach ($targetsList as $targetInstanceId) {
+            $target = $loadEntity($battleId, $targetType, $targetInstanceId);
+            if (!$target) {
+                // target pode ter morrido/removido entre tempos -> registra mensagem e pula
+                $globalMessages[] = "Alvo {$targetInstanceId} não encontrado (pode ter sido removido).";
+                Log::channel('battle_debug')->warning("[finalizeSkillCast] Target não encontrado, pulando", [
+                    'battle' => $battleId,
+                    'target_type' => $targetType,
+                    'target_instance' => $targetInstanceId,
+                    'event' => $event
+                ]);
+                continue;
+            }
 
-            // Atualiza stamina do caster se retornado
+            // Garante estrutura mínima (stats)
+            if (!isset($target['stats'])) $target['stats'] = [];
+            if (!isset($caster['stats'])) $caster['stats'] = [];
+
+            // Aplica skill (aqui o applySkill vai consumir stamina e executar o Lua atomically)
+            try {
+                $result = $skillService->applySkill($caster, $target, $battleId, (int)$skillId, $casterType, $targetType);
+                Log::info("APPLY SKILL RESULT" . json_encode($result));
+            } catch (\App\Exceptions\InsufficientStaminaException $e) {
+                // Notifica erro localmente (ex: stamina insufficient)
+                $this->notifyBattle($battleId, 'error', ['errors' => ['Stamina insuficiente para executar skill']]);
+                Log::channel('battle_debug')->warning("[finalizeSkillCast] Stamina insuficiente", [
+                    'battle' => $battleId,
+                    'caster' => $casterInstanceId,
+                    'skill' => $skillId
+                ]);
+                return false;
+            } catch (\Throwable $e) {
+                $this->notifyBattle($battleId, 'error', ['errors' => ['Erro ao aplicar skill']]);
+                Log::error("[finalizeSkillCast] Erro ao aplicar skill", [
+                    'battle' => $battleId,
+                    'exception' => $e,
+                    'event' => $event
+                ]);
+                return false;
+            }
+
+            // Atualiza dados de stamina retornados
             if (array_key_exists('current_stamina', $result) && $result['current_stamina'] !== null) {
                 $casterCurrentStamina = $result['current_stamina'];
             }
-
-            // Atualiza stamina para payload
             if (isset($result['used_stamina_total'])) {
                 $resCasterId = (string)($result['caster_id'] ?? '');
                 if ($resCasterId !== '') {
@@ -169,12 +247,12 @@ class BattleManagerHelpers
                 }
             }
 
+            // monta mensagens de resultado por target (resiliência a campos do Lua)
             $targetName = $target['name'] ?? ($target['username'] ?? 'Desconhecido');
-            $targetTypeStr = ($targetType ?? 'character') === 'monster' ? 'Monstro' : 'Jogador';
-            $actionInfoUse = "{$casterType} {$caster['instanceId']} usou skill {$skillId}";
+            $targetTypeStr = ($targetType === 'monster') ? 'Monstro' : 'Jogador';
+            $actionInfoUse = "{$casterType} {$casterInstanceId} usou skill {$skillId}";
             $actionInfoResult = '';
 
-            // Mensagens de resultado
             if (isset($result['damage_dealt'])) {
                 $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu dano de {$result['damage_dealt']}";
             } elseif (isset($result['healed_amount'])) {
@@ -208,9 +286,16 @@ class BattleManagerHelpers
                 'actionInfoUse' => $actionInfoUse,
                 'actionInfoResult' => $actionInfoResult
             ];
-        }
 
-        // Monta payloads de players
+            Log::channel('battle_debug')->info("[finalizeSkillCast] Aplicado result para target", [
+                'battle' => $battleId,
+                'caster' => $casterInstanceId,
+                'target' => $targetInstanceId,
+                'result' => $result
+            ]);
+        } // foreach targets
+
+        // --- Monta payloads atualizados dos players (inclui stamina se houver updates) ---
         $playersPayload = [];
         foreach (Redis::hgetall("battle:$battleId:characters_data") as $playerId => $playerJson) {
             $playerData = is_string($playerJson) ? json_decode($playerJson, true) ?? [] : $playerJson;
@@ -238,7 +323,7 @@ class BattleManagerHelpers
             $playersPayload[] = $playerPayload;
         }
 
-        // Monta payloads de monstros
+        // --- Monta payloads de monstros ---
         $enemiesPayload = [];
         foreach (Redis::hgetall("battle:$battleId:monsters") as $monsterId => $monsterJson) {
             $monsterData = is_string($monsterJson) ? json_decode($monsterJson, true) ?? [] : $monsterJson;
@@ -266,7 +351,7 @@ class BattleManagerHelpers
             $enemiesPayload[] = $monsterPayload;
         }
 
-        // Notifica clientes
+        // --- Envia notifyBattle com o resultado ---
         $this->notifyBattle($battleId, 'result', [
             'players' => $playersPayload,
             'enemies' => $enemiesPayload,
@@ -275,7 +360,7 @@ class BattleManagerHelpers
             'globalMessages' => $globalMessages,
         ]);
 
-        // Log depurativo de stamina
+        // Log depurativo
         if ($casterCurrentStamina !== null) {
             Log::channel('battle_debug')->info("[finalizeSkillCast] Stamina atual do caster", [
                 'instanceId' => $caster['instanceId'] ?? '',
@@ -283,9 +368,9 @@ class BattleManagerHelpers
             ]);
         }
 
-        // Retorna se alguém morreu
         return $someoneDied;
     }
+
 
 
 

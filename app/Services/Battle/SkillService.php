@@ -127,25 +127,11 @@ class SkillService
 
         if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
 
-        // 2️⃣ Consome stamina e cooldown (mesmo que antes)
-        $requiredStamina = (int)($skill['stamina_cost'] ?? 0);
-        $currentStamina = $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType);
-        if ($currentStamina < $requiredStamina) {
-            throw new InsufficientStaminaException("Stamina insuficiente");
-        }
-
-        $currentAfterConsumption = $this->staminaService->consumeStamina(
-            $battleId,
-            $casterId,
-            $requiredStamina,
-            $casterType
-        );
-
         $isTickSkill = !empty($skill['tick_skill_flag']);
         if (!$isTickSkill) {
             // Cooldown global apenas para jogadores
             if ($casterType === 'character') {
-                $this->checkCooldown($battleId, $casterId, $skill['post_delay'] ?? 0);
+                //$this->checkCooldown($battleId, $casterId, $skill['post_delay'] ?? 0);
             }
 
             // Verifica stamina (leitura inicial)
@@ -229,7 +215,7 @@ class SkillService
             $skill['lock_time'] ?? null,
         );
         $result = json_decode($resultJson, true);
-
+        Log::info("LUA RESULT" . $resultJson);
         if (isset($result['error'])) {
             throw new \RuntimeException($result['error']);
         }
@@ -274,15 +260,6 @@ class SkillService
     ): void {
         $casterId = (string)$caster['instanceId'];
 
-        // 1️⃣ Busca a skill no Redis ou fallback
-        $skill = $this->findSkillInRedis($battleId, $casterType, $casterId, $skillId);
-        if (!$skill && isset(self::$skills[$skillId])) {
-            $skill = self::$skills[$skillId];
-        }
-        if (!$skill) {
-            throw new \InvalidArgumentException("Skill {$skillId} not found");
-        }
-
         // 1️⃣ Busca a skill no Redis para este caster
         $skill = $this->findSkillInRedis($battleId, $casterType, $casterId, $skillId);
 
@@ -310,9 +287,7 @@ class SkillService
             throw new InsufficientStaminaException("Stamina insuficiente");
         }
 
-
-
-        $this->checkCooldown($battleId, $casterId, $skill['post_delay'] ?? 0);
+        //$this->checkCooldown($battleId, $casterId, $skill['post_delay'] ?? 0);
 
         if (!$target) {
             throw new \InvalidArgumentException("Target is required for skill {$skill['name']}");
