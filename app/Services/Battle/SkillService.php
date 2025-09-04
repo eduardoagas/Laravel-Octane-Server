@@ -326,7 +326,7 @@ class SkillService
             'target_id' => $target['instanceId'],
             'target_type' => $targetType,
             'phase' => 'pre_delay',
-            'ready_at' => now()->timestamp + (int)(($skill['pre_delay'] ?? 0) / 1000),
+            'ready_at' => microtime(true) + (($skill['pre_delay'] ?? 0) / 1000),
             'pre_delay' => $skill['pre_delay'] ?? 0,
             'animation_time' => $skill['animation_time'] ?? 0,
             'post_delay' => $skill['post_delay'] ?? 0,
@@ -343,15 +343,19 @@ class SkillService
     private function checkCooldown(string $battleId, string $casterId, int $postDelay)
     {
         $redisKey = "global_cooldown_at:{$battleId}:{$casterId}";
-        $now = now()->timestamp;
-        $readyAt = Redis::get($redisKey);
-        if ($readyAt && $now < (int)$readyAt) {
+        $now = microtime(true); // timestamp em float
+        $readyAt = (float)(Redis::get($redisKey) ?? 0);
+
+        if ($readyAt && $now < $readyAt) {
             throw new SkillCooldownException(
                 "Skill em cooldown até " . date('H:i:s', (int)$readyAt)
             );
         }
-        Redis::set($redisKey, $now + (int)($postDelay / 1000));
+
+        // postDelay agora deve ser convertido de ms para segundos float
+        Redis::set($redisKey, $now + ($postDelay / 1000.0));
     }
+
 
     private function calculateDamage(float $power, string $strength = 'weak'): float
     {

@@ -23,7 +23,7 @@ class BattleManager extends BattleManagerHelpers
             return false;
         }
 
-        $now = now()->timestamp;
+        $now = microtime(true); // timestamp em float com precisão de microsegundos
         $processed = false;
         $someoneDiedAny = false;
 
@@ -35,7 +35,7 @@ class BattleManager extends BattleManagerHelpers
             $lockKey = "skill_lock:$battleId:$casterId";
 
             // Se houver lock ativo no caster, postergar skill
-            $lockUntil = (int)(Redis::get($lockKey) ?? 0);
+            $lockUntil = (float)(Redis::get($lockKey) ?? 0.0);
             if ($lockUntil > $now) {
                 // postergar para o timestamp do lock
                 $event['ready_at'] = $lockUntil;
@@ -46,7 +46,7 @@ class BattleManager extends BattleManagerHelpers
             if ($now >= $event['ready_at']) {
                 if ($event['phase'] === 'pre_delay') {
                     $event['phase'] = 'animation';
-                    $event['ready_at'] = $now + (int)($event['pre_delay'] / 1000);
+                    $event['ready_at'] = $now + ($event['animation_time'] / 1000.0); // mantém precisão em float
                     Redis::hset($key, $field, json_encode($event));
 
                     $this->notifyBattle($battleId, 'animation', $event);
@@ -87,6 +87,7 @@ class BattleManager extends BattleManagerHelpers
 
         return $processed;
     }
+
 
 
     /* public function createBattle(string $battleId, array $battleData): void

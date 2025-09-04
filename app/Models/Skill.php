@@ -22,6 +22,8 @@ class Skill extends Model
         'stackable',       // novo
         'max_stacks',      // novo
         'stack_behavior',  // novo
+        'lock_time',
+        'animation_time',
     ];
 
     public function souls()
