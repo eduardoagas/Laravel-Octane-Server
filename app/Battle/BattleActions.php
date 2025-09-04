@@ -18,10 +18,8 @@ class BattleActions
         string $battleId,
         string $casterType,
         string $targetType,
-    ): bool {
+    ): void {
         $skillService = new SkillService();
-        $globalMessages = [];
-        $someoneDied = false;
 
         try {
             // Garantir array de targets
@@ -30,9 +28,6 @@ class BattleActions
             $casterName = $caster['name'] ?? ($caster['username'] ?? 'Desconhecido');
             $skillName = $skillService::getSkillName($skillId, $battleId, $casterType, $casterId);
 
-            $allResults = [];
-            $staminaUpdates = [];
-            $casterCurrentStamina = null;
 
             Log::channel('battle_debug')->info("[executeAction] Caster: $casterName usando skill $skillName", [
                 'targets' => $targetsList
@@ -59,8 +54,6 @@ class BattleActions
             Log::error("[BattleActions] Erro inesperado: " . $e->getMessage(), ['exception' => $e]);
             self::broadcastError($battleId, ["Erro inesperado ao executar ação"]);
         }
-
-        return $someoneDied;
     }
 
     private static function broadcastError(string $battleId, array $messages): void

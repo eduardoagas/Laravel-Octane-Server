@@ -43,6 +43,17 @@ class BattleManager extends BattleManagerHelpers
                 continue;
             }
 
+            // 🔍 Logs de debug antes da comparação
+            Log::debug("[BattlePending] Checking event", [
+                'battle'   => $battleId,
+                'field'    => $field,
+                'event'    => $event,
+                'casterId' => $casterId,
+                'now'      => $now,
+                'ready_at' => $event['ready_at'],
+                'cmp'      => $now < $event['ready_at'] ? 'now < ready_at' : ($now > $event['ready_at'] ? 'now > ready_at' : 'now == ready_at'),
+            ]);
+
             if ($now >= $event['ready_at']) {
                 if ($event['phase'] === 'pre_delay') {
                     $event['phase'] = 'animation';
@@ -87,6 +98,7 @@ class BattleManager extends BattleManagerHelpers
 
         return $processed;
     }
+
 
 
 
@@ -284,13 +296,7 @@ class BattleManager extends BattleManagerHelpers
                                     'targetId' => $targetId
                                 ]);
                             }
-
-                            if (!empty($someoneDied)) {
-                                $someoneDiedAny = true;
-                            }
                         }
-
-                        if ($someoneDiedAny) $needCheckBattleEnd = true;
 
                         Log::info("[BattleEffects] Applied debuff tick skill {$skillId} for {$field} on {$entityType} {$instanceId} (key {$debuffsKey}); stacks={$stacks}", [
                             'battle' => $battleId,
@@ -412,8 +418,6 @@ class BattleManager extends BattleManagerHelpers
                             }
                         }
 
-                        if (!empty($someoneDiedAny)) $needCheckBattleEnd = true;
-
                         Log::info("[BattleEffects] Applied buff tick skill {$skillId} for {$field} on {$entityType} {$instanceId} (key {$buffsKey}); stacks={$stacks}");
                     } catch (\Throwable $e) {
                         Log::error("[BattleEffects] Failed buff tick skill {$skillId} for {$field}: " . $e->getMessage(), [
@@ -433,34 +437,6 @@ class BattleManager extends BattleManagerHelpers
             $data['tick_count'] = $tickCount;
             Redis::hset($buffsKey, $field, json_encode($data, JSON_UNESCAPED_UNICODE));
             $processed = true;
-        }
-
-        if ($needCheckBattleEnd) {
-            // rebuild monsters
-            $monsters = [];
-            $monstersRaw = Redis::hgetall("battle:$battleId:monsters") ?: [];
-            foreach ($monstersRaw as $k => $json) {
-                $m = $json ? json_decode($json, true) : null;
-                if (!is_array($m)) continue;
-                if (!isset($m['instanceId'])) $m['instanceId'] = (string)$k;
-                $monsters[$k] = $m;
-            }
-
-            // rebuild players
-            $players = [];
-            $playersRaw = Redis::hgetall("battle:$battleId:characters_data") ?: [];
-            foreach ($playersRaw as $k => $json) {
-                $p = $json ? json_decode($json, true) : null;
-                if (!is_array($p)) continue;
-                if (!isset($p['instanceId'])) $p['instanceId'] = (string)$k;
-                $players[$k] = $p;
-            }
-
-            Log::info("[BattleEffects] someoneDied detected during effects processing for {$entityType}:{$instanceId}, checking battle end", [
-                'battle' => $battleId
-            ]);
-
-            $this->checkBattleEnd($battleId, $players, $monsters);
         }
 
         return $processed;
@@ -563,14 +539,6 @@ class BattleManager extends BattleManagerHelpers
         $result = $this->processPendingActions($battleId, $players, $monsters);
         if ($result['processed']) {
             $processedAny = true;
-        }
-        if ($result['needCheckBattleEnd']) {
-            $needCheckBattleEnd = true;
-        }
-
-        // Checa fim de batalha uma vez, usando os arrays locais atualizados
-        if ($needCheckBattleEnd) {
-            $this->checkBattleEnd($battleId, $players, $monsters);
         }
 
         return $processedAny;
@@ -684,7 +652,7 @@ class BattleManager extends BattleManagerHelpers
                     $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                     $targetRef = $targetJson ? json_decode($targetJson, true) : null;
 
-                    $someoneDied = $battleActions->executeAction($monster, $skillId, $targetRef, $battleId, 'monster', $t['category']);
+                    $battleActions->executeAction($monster, $skillId, $targetRef, $battleId, 'monster', $t['category']);
 
 
                     $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
@@ -702,10 +670,6 @@ class BattleManager extends BattleManagerHelpers
                             'targetId' => $targetId
                         ]);
                     }
-                    if ($someoneDied) {
-                        // não checar imediatamente, apenas sinalizar
-                        $needCheckBattleEnd = true;
-                    }
                 }
 
                 $processed = true;
@@ -713,9 +677,6 @@ class BattleManager extends BattleManagerHelpers
             } catch (\Throwable $e) {
                 Log::error("[processBattleMonsters] Erro ao processar ação do monstro {$monsterKey}: " . $e->getMessage(), ['exception' => $e]);
             }
-        }
-        if ($needCheckBattleEnd) {
-            $this->checkBattleEnd($battleId, $players, $monsters);
         }
 
         return $processed;
@@ -790,7 +751,7 @@ class BattleManager extends BattleManagerHelpers
                         'targetId' => $targetId,
                     ]);
 
-                    $someoneDied = $battleActions->executeAction($caster, $skillId, $targetRef, $battleId, 'character', $t['category']);
+                    $battleActions->executeAction($caster, $skillId, $targetRef, $battleId, 'character', $t['category']);
 
                     // atualiza estado local com a "fresh" entidade do Redis
                     $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
@@ -807,10 +768,6 @@ class BattleManager extends BattleManagerHelpers
                             'targetKey' => $targetKey,
                             'targetId' => $targetId
                         ]);
-                    }
-
-                    if ($someoneDied) {
-                        $needCheckBattleEnd = true;
                     }
                 }
 
