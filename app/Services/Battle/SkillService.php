@@ -334,6 +334,7 @@ class SkillService
         ];
 
         $key = "battle:{$battleId}:pending_skills";
+        Log::info("EVENT: " . json_encode($event));
         Redis::hset($key, "{$casterType}:{$casterId}", json_encode($event));
     }
 
@@ -343,18 +344,22 @@ class SkillService
     private function checkCooldown(string $battleId, string $casterId, int $postDelay)
     {
         $redisKey = "global_cooldown_at:{$battleId}:{$casterId}";
-        $now = microtime(true); // timestamp em float
-        $readyAt = (float)(Redis::get($redisKey) ?? 0);
+        $now = microtime(true);
 
-        if ($readyAt && $now < $readyAt) {
+        $ttlMs = $postDelay; // postDelay já em ms
+
+        // Tenta setar a chave apenas se não existir (NX) e com TTL em ms
+        $set = Redis::set($redisKey, $now + ($ttlMs / 1000), 'NX', 'PX', $ttlMs);
+
+        if (!$set) {
+            // se não conseguiu setar, a skill está em cooldown
+            $readyAt = (float)(Redis::get($redisKey) ?? 0);
             throw new SkillCooldownException(
                 "Skill em cooldown até " . date('H:i:s', (int)$readyAt)
             );
         }
-
-        // postDelay agora deve ser convertido de ms para segundos float
-        Redis::set($redisKey, $now + ($postDelay / 1000.0));
     }
+
 
 
     private function calculateDamage(float $power, string $strength = 'weak'): float
