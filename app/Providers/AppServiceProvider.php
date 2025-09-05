@@ -45,7 +45,7 @@ class AppServiceProvider extends ServiceProvider
                     \Illuminate\Support\Facades\Log::info("[BattleMonstersTicker] Processed monsters for battle $battleId");
                 }
             }
-        }, 0.1);
+        }, 0.3);
 
         // === Processa buffs e debuffs, ticks de 1 segundo ===
         Octane::tick('battle-effects-ticker', function () use ($battleManager) {
@@ -67,7 +67,7 @@ class AppServiceProvider extends ServiceProvider
                     \Illuminate\Support\Facades\Log::info("[BattleSkillsTicker] Processed skills for battle $battleId");
                 }
             }
-        }, 0.2);
+        }, 0.05);
         // === Limpa batalhas antigas a cada 10 segundos ===
         /*Octane::tick('battle-cleanup-ticker', function () use ($battleManager) {
             $battleManager->cleanupOldBattles(3600);
