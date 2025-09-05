@@ -260,40 +260,26 @@ class SkillService
     ): void {
         $casterId = (string)$caster['instanceId'];
 
-        // 1️⃣ Busca a skill no Redis para este caster
-        $skill = $this->findSkillInRedis($battleId, $casterType, $casterId, $skillId);
+        // Skill
+        $skill = $this->findSkillInRedis($battleId, $casterType, $casterId, $skillId)
+            ?? self::$skills[$skillId] ?? null;
 
-        // 2️⃣ Fallback para array estático em memória (se existir)
-        if (!$skill) {
-            if (isset(self::$skills[$skillId])) {
-                $skill = self::$skills[$skillId];
-                Log::warning("[SkillService] Skill {$skillId} não encontrada no Redis, usando fallback em memória.");
-            } else {
-                throw new \InvalidArgumentException("Skill {$skillId} not found");
-            }
-        }
+        if (!$skill) throw new \InvalidArgumentException("Skill {$skillId} not found");
 
-        // garante que atributos do caster venham de stats
+        // Stats e buffs
         $casterStats = $caster['stats'] ?? [];
         if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
-
-        // aplica buffs/debuffs ativos do caster
         $casterStats = $this->applyCasterBuffs($battleId, $casterType, $casterId, $casterStats);
 
-        // 2️⃣ Consome stamina e cooldown (mesmo que antes)
+        // Stamina
         $requiredStamina = (int)($skill['stamina_cost'] ?? 0);
         $currentStamina = $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType);
-        if ($currentStamina < $requiredStamina) {
-            throw new InsufficientStaminaException("Stamina insuficiente");
-        }
+        if ($currentStamina < $requiredStamina) throw new InsufficientStaminaException();
 
-        //$this->checkCooldown($battleId, $casterId, $skill['post_delay'] ?? 0);
+        if (!$target) throw new \InvalidArgumentException("Target is required for skill {$skill['name']}");
 
-        if (!$target) {
-            throw new \InvalidArgumentException("Target is required for skill {$skill['name']}");
-        }
-
-        // 3️⃣ Cria evento pendente no Redis
+        // Evento
+        $eventId = uniqid('', true); // ID único do evento
         $event = [
             'caster_id' => $casterId,
             'caster_type' => $casterType,
@@ -308,10 +294,17 @@ class SkillService
             'lock_time' => $skill['lock_time'] ?? 0,
         ];
 
-        $key = "battle:{$battleId}:pending_skills";
-        Log::info("EVENT: " . json_encode($event));
-        Redis::hset($key, "{$casterType}:{$casterId}", json_encode($event));
+        // Chaves Redis
+        $zsetKey = "battle:{$battleId}:pending_skills_zset";   // ZSET com score = ready_at
+        $hashKey = "battle:{$battleId}:pending_skills_data";   // HASH com eventId => JSON
+
+        // Grava
+        Redis::hset($hashKey, $eventId, json_encode($event));
+        Redis::zadd($zsetKey, [$eventId => $event['ready_at']]);
+
+        Log::info("EVENT CREATED: {$eventId} => " . json_encode($event));
     }
+
 
     /**
      * Checa e seta cooldown global simples

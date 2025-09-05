@@ -125,6 +125,28 @@ class BattleManagerHelpers
         ]);
     }
 
+    protected function rebuildAndCheckBattle(string $battleId)
+    {
+        $monsters = [];
+        foreach (Redis::hgetall("battle:$battleId:monsters") ?: [] as $k => $json) {
+            $m = $json ? json_decode($json, true) : null;
+            if (!is_array($m)) continue;
+            $m['instanceId'] = $m['instanceId'] ?? (string)$k;
+            $monsters[$k] = $m;
+        }
+
+        $players = [];
+        foreach (Redis::hgetall("battle:$battleId:characters_data") ?: [] as $k => $json) {
+            $p = $json ? json_decode($json, true) : null;
+            if (!is_array($p)) continue;
+            $p['instanceId'] = $p['instanceId'] ?? (string)$k;
+            $players[$k] = $p;
+        }
+
+        Log::info("[BattleEffects] someoneDied detected, checking battle end", ['battle' => $battleId]);
+        $this->checkBattleEnd($battleId, $players, $monsters);
+    }
+
     protected function finalizeSkillCast(string $battleId, array $event): bool
     {
         $skillService = new \App\Services\Battle\SkillService();
@@ -139,7 +161,7 @@ class BattleManagerHelpers
         $targetType = $event['target_type'] ?? 'character';
 
         if ($casterInstanceId === '' || !$skillId || (empty($event['target_id']) && empty($event['targets']))) {
-            $this->notifyBattle($battleId, 'error', ['errors' => ['Dados inválidos para finalizar skill']]);
+            //$this->notifyBattle($battleId, 'error', ['errors' => ['Dados inválidos para finalizar skill']]);
             Log::channel('battle_debug')->warning("[finalizeSkillCast] Evento inválido", ['battle' => $battleId, 'event' => $event]);
             return false;
         }
@@ -156,7 +178,7 @@ class BattleManagerHelpers
         // --- Carrega caster completo ---
         $caster = $loadEntity($battleId, $casterType, $casterInstanceId);
         if (!$caster) {
-            $this->notifyBattle($battleId, 'error', ['errors' => ['Caster não encontrado ao finalizar skill']]);
+            //$this->notifyBattle($battleId, 'error', ['errors' => ['Caster não encontrado ao finalizar skill']]);
             Log::channel('battle_debug')->warning("[finalizeSkillCast] Caster não encontrado", [
                 'battle' => $battleId,
                 'caster_type' => $casterType,
@@ -179,7 +201,7 @@ class BattleManagerHelpers
         }
 
         if (empty($targetsList)) {
-            $this->notifyBattle($battleId, 'error', ['errors' => ['Targets inválidos ao finalizar skill']]);
+            //$this->notifyBattle($battleId, 'error', ['errors' => ['Targets inválidos ao finalizar skill']]);
             Log::channel('battle_debug')->warning("[finalizeSkillCast] Targets vazios ou inválidos", [
                 'battle' => $battleId,
                 'event' => $event
@@ -215,7 +237,7 @@ class BattleManagerHelpers
                 Log::info("APPLY SKILL RESULT" . json_encode($result));
             } catch (\App\Exceptions\InsufficientStaminaException $e) {
                 // Notifica erro localmente (ex: stamina insufficient)
-                $this->notifyBattle($battleId, 'error', ['errors' => ['Stamina insuficiente para executar skill']]);
+                //$this->notifyBattle($battleId, 'error', ['errors' => ['Stamina insuficiente para executar skill']]);
                 Log::channel('battle_debug')->warning("[finalizeSkillCast] Stamina insuficiente", [
                     'battle' => $battleId,
                     'caster' => $casterInstanceId,
@@ -223,7 +245,7 @@ class BattleManagerHelpers
                 ]);
                 return false;
             } catch (\Throwable $e) {
-                $this->notifyBattle($battleId, 'error', ['errors' => ['Erro ao aplicar skill']]);
+                //$this->notifyBattle($battleId, 'error', ['errors' => ['Erro ao aplicar skill']]);
                 Log::error("[finalizeSkillCast] Erro ao aplicar skill", [
                     'battle' => $battleId,
                     'exception' => $e,
@@ -366,6 +388,15 @@ class BattleManagerHelpers
                 'instanceId' => $caster['instanceId'] ?? '',
                 'current_stamina' => $casterCurrentStamina
             ]);
+        }
+
+        if ($casterType === 'character') {
+            Redis::del("battle:$battleId:skill_in_execution:{$casterInstanceId}");
+            Redis::hdel("battle:$battleId:pending_actions", $casterInstanceId);
+        } elseif ($casterType === 'monster') {
+            // Se houver algum lock específico de monster, trate aqui. Caso contrário, apenas marca isCasting = false.
+            $caster['isCasting'] = false;
+            Redis::hset("battle:$battleId:monsters", $casterInstanceId, json_encode($caster));
         }
 
         return $someoneDied;
@@ -554,5 +585,101 @@ class BattleManagerHelpers
         ]);
 
         return $targets;
+    }
+
+    public function checkBattleEnd(string $battleId, ?array $playersLocal = null, ?array $monstersLocal = null): void
+    {
+        // Lock Redis para evitar finalização concorrente (com retry curto)
+        $lockKey = "battle:{$battleId}:finish_lock";
+        $gotLock = false;
+        $attempts = 10; // tenta por ~100ms (10 * 10ms)
+        while ($attempts-- > 0) {
+            if (Redis::setnx($lockKey, 1)) {
+                // conseguiu
+                Redis::expire($lockKey, 5); // expira em 5s como safety
+                $gotLock = true;
+                break;
+            }
+            // aguarda um pouco antes de tentar novamente (10ms)
+            usleep(10000);
+        }
+
+        if (! $gotLock) {
+            // Se não conseguiu lock após tentativas, loga e continua (finalização é idempotente)
+            Log::warning("[checkBattleEnd] Não conseguiu adquirir lock para $battleId após tentativas; continuará sem lock.");
+        }
+
+        try {
+            // Usar arrays locais se passados (eles já estão decodificados); senão ler do Redis
+            if (is_array($playersLocal)) {
+                $playersIter = array_values($playersLocal); // mantemos só os valores
+            } else {
+                $playersRaw = Redis::hgetall("battle:$battleId:characters_data");
+                $playersIter = array_map(fn($p) => is_string($p) ? json_decode($p, true) : $p, $playersRaw);
+            }
+
+            if (is_array($monstersLocal)) {
+                $monstersIter = array_values($monstersLocal);
+            } else {
+                $monstersRaw = Redis::hgetall("battle:$battleId:monsters");
+                $monstersIter = array_map(fn($m) => is_string($m) ? json_decode($m, true) : $m, $monstersRaw);
+            }
+
+            $allPlayersDead = true;
+            foreach ($playersIter as $player) {
+                $stats = $player['stats'] ?? null;
+                $stats = is_string($stats) ? json_decode($stats, true) : $stats;
+                if (($stats['current_hp'] ?? 0) > 0) {
+                    $allPlayersDead = false;
+                    break;
+                }
+            }
+
+            $allMonstersDead = true;
+            foreach ($monstersIter as $monster) {
+                $stats = $monster['stats'] ?? null;
+                $stats = is_string($stats) ? json_decode($stats, true) : $stats;
+                if (($stats['current_hp'] ?? 0) > 0) {
+                    $allMonstersDead = false;
+                    break;
+                }
+            }
+
+            if ($allPlayersDead) {
+                Log::info("[BattleManager] Todos os jogadores morreram na batalha $battleId. Finalizando...");
+                $this->finishBattle($battleId);
+                return;
+            }
+
+            if ($allMonstersDead) {
+                Log::info("[BattleManager] Todos os monstros morreram na batalha $battleId. Jogadores venceram!");
+                $this->finishBattle($battleId);
+                return;
+            }
+        } finally {
+            // só remove o lock se nós o adquirimos
+            if ($gotLock) {
+                Redis::del($lockKey);
+            }
+        }
+    }
+
+    public function finishBattle(string $battleId): void
+    {
+        Redis::srem('battles:active', $battleId);
+
+        // Busca todas as chaves que começam com "battle:<id>:"
+        $pattern = "battle:$battleId:*";
+        $cursor = '0';
+
+        do {
+            [$cursor, $keys] = Redis::scan($cursor, ['match' => $pattern, 'count' => 10]);
+
+            if (!empty($keys)) {
+                Redis::del($keys);
+            }
+        } while ($cursor !== '0');
+
+        Log::info("Battle $battleId finalized and all Redis keys removed.");
     }
 }

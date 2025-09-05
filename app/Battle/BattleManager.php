@@ -16,88 +16,75 @@ class BattleManager extends BattleManagerHelpers
 
     public function processBattlePendingSkills(string $battleId): bool
     {
-        $key = "battle:{$battleId}:pending_skills";
-        $entries = Redis::hgetall($key);
+        $zsetKey = "battle:{$battleId}:pending_skills_zset";
+        $hashKey = "battle:{$battleId}:pending_skills_data";
 
-        if (!$entries) {
-            return false;
-        }
-
-        $now = microtime(true); // timestamp em float com precisão de microsegundos
+        $now = microtime(true);
         $processed = false;
         $someoneDiedAny = false;
 
-        foreach ($entries as $field => $json) {
-            $event = json_decode($json, true);
-            if (!$event || !isset($event['ready_at'])) continue;
+        // Pega todos eventos com ready_at <= agora
+        $readyEvents = Redis::zrangebyscore($zsetKey, '-inf', $now);
 
-            $casterId = $event['caster_id'] ?? null;
-            $lockKey = "skill_lock:$battleId:$casterId";
-
-            // Se houver lock ativo no caster, postergar skill
-            $lockUntil = (float)(Redis::get($lockKey) ?? 0.0);
-            if ($lockUntil > $now) {
-                // postergar para o timestamp do lock
-                $event['ready_at'] = $lockUntil;
-                Redis::hset($key, $field, json_encode($event));
+        foreach ($readyEvents as $eventId) {
+            $json = Redis::hget($hashKey, $eventId);
+            if (!$json) {
+                Redis::zrem($zsetKey, $eventId); // limpezas de segurança
                 continue;
             }
 
-            // 🔍 Logs de debug antes da comparação
-            Log::debug("[BattlePending] Checking event", [
-                'battle'   => $battleId,
-                'field'    => $field,
-                'event'    => $event,
-                'casterId' => $casterId,
-                'now'      => $now,
-                'ready_at' => $event['ready_at'],
-                'cmp'      => $now < $event['ready_at'] ? 'now < ready_at' : ($now > $event['ready_at'] ? 'now > ready_at' : 'now == ready_at'),
-            ]);
+            $event = json_decode($json, true);
+            if (!$event || !isset($event['ready_at'])) continue;
 
+            // Verifica se o evento já está sendo processado
+            $processingKey = "skill_processing:$battleId:$eventId";
+            $alreadyProcessing = Redis::set($processingKey, 1, 'NX', 'EX', 10); // marca como processando por 10s
+            if (!$alreadyProcessing) {
+                Log::channel('battle_debug')->debug("Skill {$eventId} já está em execução, pulando...");
+                continue;
+            }
+
+            $casterId = $event['caster_id'] ?? null;
+            $lockKey = "skill_lock:$battleId:$casterId";
+            $lockUntil = (float)(Redis::get($lockKey) ?? 0.0);
+
+            if ($lockUntil > $now) {
+                $event['ready_at'] = $lockUntil;
+                Redis::hset($hashKey, $eventId, json_encode($event));
+                Redis::zadd($zsetKey, [$eventId => $event['ready_at']]);
+                continue;
+            }
+            Log::channel('battle_debug')->debug('[BattlePending] Checking event', [
+                'battle' => $battleId,
+                'eventId' => $eventId,
+                'event' => $event,
+                'now' => $now,
+                'ready_at' => $event['ready_at']
+            ]);
             if ($now >= $event['ready_at']) {
                 if ($event['phase'] === 'pre_delay') {
                     $event['phase'] = 'animation';
-                    $event['ready_at'] = $now + ($event['animation_time'] / 1000.0); // mantém precisão em float
-                    Redis::hset($key, $field, json_encode($event));
-
+                    $event['ready_at'] = $now + ($event['animation_time'] / 1000.0);
+                    Redis::hset($hashKey, $eventId, json_encode($event));
+                    Redis::zadd($zsetKey, [$eventId => $event['ready_at']]);
                     $this->notifyBattle($battleId, 'animation', $event);
                     $processed = true;
                 } elseif ($event['phase'] === 'animation') {
                     $someoneDied = $this->finalizeSkillCast($battleId, $event);
-                    if ($someoneDied) {
-                        $someoneDiedAny = true;
-                    }
-                    Redis::hdel($key, $field);
+                    if ($someoneDied) $someoneDiedAny = true;
+                    Redis::hdel($hashKey, $eventId);
+                    Redis::zrem($zsetKey, $eventId);
                     $processed = true;
                 }
             }
         }
 
-        if ($someoneDiedAny) {
-            // rebuild monsters
-            $monsters = [];
-            foreach (Redis::hgetall("battle:$battleId:monsters") ?: [] as $k => $json) {
-                $m = $json ? json_decode($json, true) : null;
-                if (!is_array($m)) continue;
-                if (!isset($m['instanceId'])) $m['instanceId'] = (string)$k;
-                $monsters[$k] = $m;
-            }
-
-            // rebuild players
-            $players = [];
-            foreach (Redis::hgetall("battle:$battleId:characters_data") ?: [] as $k => $json) {
-                $p = $json ? json_decode($json, true) : null;
-                if (!is_array($p)) continue;
-                if (!isset($p['instanceId'])) $p['instanceId'] = (string)$k;
-                $players[$k] = $p;
-            }
-
-            Log::info("[BattleEffects] someoneDied detected, checking battle end", ['battle' => $battleId]);
-            $this->checkBattleEnd($battleId, $players, $monsters);
-        }
+        if ($someoneDiedAny) $this->rebuildAndCheckBattle($battleId);
 
         return $processed;
     }
+
+
 
 
 
@@ -202,8 +189,6 @@ class BattleManager extends BattleManagerHelpers
         $buffsKey   = $baseKey . ":buffs";
 
         $debuffs = Redis::hgetall($debuffsKey) ?: [];
-
-        $needCheckBattleEnd = false;
 
         foreach ($debuffs as $field => $json) {
             $data = json_decode($json, true);
@@ -443,24 +428,7 @@ class BattleManager extends BattleManagerHelpers
     }
 
 
-    public function finishBattle(string $battleId): void
-    {
-        Redis::srem('battles:active', $battleId);
 
-        // Busca todas as chaves que começam com "battle:<id>:"
-        $pattern = "battle:$battleId:*";
-        $cursor = '0';
-
-        do {
-            [$cursor, $keys] = Redis::scan($cursor, ['match' => $pattern, 'count' => 10]);
-
-            if (!empty($keys)) {
-                Redis::del($keys);
-            }
-        } while ($cursor !== '0');
-
-        Log::info("Battle $battleId finalized and all Redis keys removed.");
-    }
 
 
     public function cleanupOldBattles(int $maxAgeSeconds = 3600): void
@@ -525,7 +493,6 @@ class BattleManager extends BattleManagerHelpers
         }
 
         $processedAny = false;
-        $needCheckBattleEnd = false;
 
         // PRIORIDADE: processa primeiro trocas de soul pendentes
         $soulChangesProcessed = $this->processPendingSoulChanges($battleId);
@@ -569,10 +536,15 @@ class BattleManager extends BattleManagerHelpers
         }
 
         $processed = false;
-        $needCheckBattleEnd = false; // NOVO: sinaliza se precisamos checar fim após o processamento
 
 
         foreach ($monsters as $monsterKey => &$monster) {
+
+            // ✅ Checagem se o monstro já está executando uma skill
+            if (!empty($monster['isCasting'])) {
+                Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) já está executando uma skill, pulando");
+                continue;
+            }
             $monsterCurrentStamina = StaminaService::getCurrentStamina($battleId, (string)$monsterKey, 'monster');
             $monster['current_stamina'] = $monsterCurrentStamina;
 
@@ -590,6 +562,25 @@ class BattleManager extends BattleManagerHelpers
 
             if (!$behavior) {
                 Log::warning("[processBattleMonsters] Behavior não encontrado para tipo {$monster['type']}");
+                continue;
+            }
+
+            // ✅ Checagem se já existe skill pendente no ZSET
+            $pendingEvents = Redis::zrangebyscore("battle:{$battleId}:pending_skills_zset", '-inf', '+inf');
+            $hasPendingSkill = false;
+
+            foreach ($pendingEvents as $eventId) {
+                $eventJson = Redis::hget("battle:{$battleId}:pending_skills_data", $eventId);
+                if (!$eventJson) continue;
+                $event = json_decode($eventJson, true);
+                if (($event['caster_id'] ?? null) === (string)$monsterKey) {
+                    $hasPendingSkill = true;
+                    break;
+                }
+            }
+
+            if ($hasPendingSkill) {
+                Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) já tem skill pendente, pulando");
                 continue;
             }
 
@@ -652,6 +643,9 @@ class BattleManager extends BattleManagerHelpers
                     $targetJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                     $targetRef = $targetJson ? json_decode($targetJson, true) : null;
 
+
+                    $monster['isCasting'] = true; // impede múltiplas execuções simultâneas
+                    Redis::hset("battle:$battleId:monsters", $monsterKey, json_encode($monster));
                     $battleActions->executeAction($monster, $skillId, $targetRef, $battleId, 'monster', $t['category']);
 
 
@@ -775,10 +769,6 @@ class BattleManager extends BattleManagerHelpers
             } catch (\Exception $e) {
                 Log::error("[processPendingActions] Error processing action for instance {$instanceId}: " . $e->getMessage(), ['exception' => $e]);
             }
-
-            // marca que terminou a execução e remove pending cache — usa instanceId aqui
-            Redis::del("battle:$battleId:skill_in_execution:{$instanceId}");
-            Redis::hdel($pendingActionsKey, $instanceId);
         }
 
         return ['processed' => $processed, 'needCheckBattleEnd' => $needCheckBattleEnd];
@@ -787,82 +777,7 @@ class BattleManager extends BattleManagerHelpers
 
 
 
-    public function checkBattleEnd(string $battleId, ?array $playersLocal = null, ?array $monstersLocal = null): void
-    {
-        // Lock Redis para evitar finalização concorrente (com retry curto)
-        $lockKey = "battle:{$battleId}:finish_lock";
-        $gotLock = false;
-        $attempts = 10; // tenta por ~100ms (10 * 10ms)
-        while ($attempts-- > 0) {
-            if (Redis::setnx($lockKey, 1)) {
-                // conseguiu
-                Redis::expire($lockKey, 5); // expira em 5s como safety
-                $gotLock = true;
-                break;
-            }
-            // aguarda um pouco antes de tentar novamente (10ms)
-            usleep(10000);
-        }
 
-        if (! $gotLock) {
-            // Se não conseguiu lock após tentativas, loga e continua (finalização é idempotente)
-            Log::warning("[checkBattleEnd] Não conseguiu adquirir lock para $battleId após tentativas; continuará sem lock.");
-        }
-
-        try {
-            // Usar arrays locais se passados (eles já estão decodificados); senão ler do Redis
-            if (is_array($playersLocal)) {
-                $playersIter = array_values($playersLocal); // mantemos só os valores
-            } else {
-                $playersRaw = Redis::hgetall("battle:$battleId:characters_data");
-                $playersIter = array_map(fn($p) => is_string($p) ? json_decode($p, true) : $p, $playersRaw);
-            }
-
-            if (is_array($monstersLocal)) {
-                $monstersIter = array_values($monstersLocal);
-            } else {
-                $monstersRaw = Redis::hgetall("battle:$battleId:monsters");
-                $monstersIter = array_map(fn($m) => is_string($m) ? json_decode($m, true) : $m, $monstersRaw);
-            }
-
-            $allPlayersDead = true;
-            foreach ($playersIter as $player) {
-                $stats = $player['stats'] ?? null;
-                $stats = is_string($stats) ? json_decode($stats, true) : $stats;
-                if (($stats['current_hp'] ?? 0) > 0) {
-                    $allPlayersDead = false;
-                    break;
-                }
-            }
-
-            $allMonstersDead = true;
-            foreach ($monstersIter as $monster) {
-                $stats = $monster['stats'] ?? null;
-                $stats = is_string($stats) ? json_decode($stats, true) : $stats;
-                if (($stats['current_hp'] ?? 0) > 0) {
-                    $allMonstersDead = false;
-                    break;
-                }
-            }
-
-            if ($allPlayersDead) {
-                Log::info("[BattleManager] Todos os jogadores morreram na batalha $battleId. Finalizando...");
-                $this->finishBattle($battleId);
-                return;
-            }
-
-            if ($allMonstersDead) {
-                Log::info("[BattleManager] Todos os monstros morreram na batalha $battleId. Jogadores venceram!");
-                $this->finishBattle($battleId);
-                return;
-            }
-        } finally {
-            // só remove o lock se nós o adquirimos
-            if ($gotLock) {
-                Redis::del($lockKey);
-            }
-        }
-    }
 
     /**
      * Processa mudanças de soul enfileiradas para a batalha.
