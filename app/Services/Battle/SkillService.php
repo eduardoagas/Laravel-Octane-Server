@@ -279,6 +279,21 @@ class SkillService
         if (!$target) throw new \InvalidArgumentException("Target is required for skill {$skill['name']}");
 
         // Evento
+        // dentro de startSkillCast antes de criar $eventId
+        $totalMs = ($skill['pre_delay'] ?? 0) + ($skill['animation_time'] ?? 0) + ($skill['post_delay'] ?? 0) + ($skill['lock_time'] ?? 0);
+        $ttlSec = max(1, (int)ceil($totalMs / 1000) + 1); // +1s buffer
+
+        // tenta setar NX: se já existe, não enfileira outra skill
+        // SOMENTE setar para characters (não para monsters)
+        if ($casterType === 'character') {
+            $executionKey = "battle:{$battleId}:skill_in_execution:{$casterId}";
+            // tenta setar NX: se já existe, não enfileira outra skill
+            $ok = Redis::set($executionKey, 1, 'NX', 'EX', $ttlSec);
+            if (!$ok) {
+                Log::channel('battle_debug')->debug("[startSkillCast] Caster {$casterId} já tem skill em execução, ignorando enfileiramento.");
+                return; // ou lance exceção/retorne false conforme seu fluxo
+            }
+        }
         $eventId = uniqid('', true); // ID único do evento
         $event = [
             'caster_id' => $casterId,

@@ -77,7 +77,16 @@ class SkillInExecutionHandler implements HandlesUnityEvent
 
         // 4) Marca que está em execução (usando instanceId)
         $executionKey = "battle:$battleId:skill_in_execution:{$playerInstanceId}";
-        Redis::set($executionKey, time());
+        // Tenta criar lock apenas se não existir
+        $lockAcquired = Redis::set($executionKey, time(), 'NX', 'PX', 1000); // lock de 1s
+
+        if (!$lockAcquired) {
+            Log::info("[SkillInExecutionHandler] Skill already in execution, aborting", [
+                'battleId' => $battleId,
+                'instanceId' => $playerInstanceId,
+            ]);
+            return;
+        }
 
         // 5) Remove cache temporário (remove ambas as keys por segurança/compat)
         try {

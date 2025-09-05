@@ -360,9 +360,17 @@ else
 end
 
 -- === Lock handling ===
+
+-- inferir targetType a partir do targetKey
+local targetType = "generic"
+if string.find(targetKey, "characters_data") then
+    targetType = "character"
+elseif string.find(targetKey, "monsters") then
+    targetType = "monster"
+end
 -- lockTime vem em milissegundos (int)
 if lockTime > 0 then
-    local lockKey = "skill_lock:" .. battleId .. ":" .. targetId
+    local lockKey = "skill_lock:" .. battleId .. ":" .. targetType .. ":" .. targetId
     local currentLock = tonumber(redis.call("GET", lockKey) or 0)
 
     -- tempo atual em segundos inteiros

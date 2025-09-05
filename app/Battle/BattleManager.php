@@ -29,53 +29,100 @@ class BattleManager extends BattleManagerHelpers
         foreach ($readyEvents as $eventId) {
             $json = Redis::hget($hashKey, $eventId);
             if (!$json) {
-                Redis::zrem($zsetKey, $eventId); // limpezas de segurança
+                Redis::zrem($zsetKey, $eventId); // limpeza de segurança
                 continue;
             }
 
             $event = json_decode($json, true);
             if (!$event || !isset($event['ready_at'])) continue;
 
-            // Verifica se o evento já está sendo processado
-            $processingKey = "skill_processing:$battleId:$eventId";
-            $alreadyProcessing = Redis::set($processingKey, 1, 'NX', 'EX', 10); // marca como processando por 10s
+            $casterId = (string)($event['caster_id'] ?? '');
+            $casterType = ($event['caster_type'] ?? 'character'); // importante
+            $casterLockKey = "caster_lock:{$battleId}:{$casterType}:{$casterId}";
+            $casterLockUntil = (float)(Redis::get($casterLockKey) ?? 0.0);
+
+            // Se o caster estiver ocupado, postergar a skill
+            if ($casterLockUntil > $now) {
+                $event['ready_at'] = $casterLockUntil;
+                Redis::hset($hashKey, $eventId, json_encode($event));
+                Redis::zadd($zsetKey, [$eventId => $event['ready_at']]);
+                continue;
+            }
+
+            // Lock do target: postergar se necessário e/ou para usar no cálculo do bloqueio final
+            $targetId = isset($event['target_id']) ? (string)$event['target_id'] : null;
+            $targetType = ($event['target_type'] ?? 'character'); // importante
+            $targetLockKey = $targetId ? "skill_lock:{$battleId}:{$targetType}:{$targetId}" : null;
+            $targetLockUntil = $targetLockKey ? (float)(Redis::get($targetLockKey) ?? 0.0) : 0.0;
+
+            // Calcula total ready_at considerando pre_delay, animation_time, post_delay (em segundos)
+            $preDelaySec = ($event['pre_delay'] ?? 0) / 1000;
+            $animationSec = ($event['animation_time'] ?? 0) / 1000;
+            $postDelaySec = ($event['post_delay'] ?? 0) / 1000;
+            $skillLockMs   = ($event['lock_time'] ?? 0); // ms
+
+            // nova ready (considerando preDelay e lock do target já existente)
+            $newReadyAt = $now + $preDelaySec;
+            if ($targetLockUntil > $newReadyAt) {
+                $newReadyAt = $targetLockUntil;
+            }
+
+            // Lock de processamento: impede duplicação de execução da mesma skill
+            // incluir casterType também (caso queira evitar colisões de eventId)
+            $processingKey = "skill_processing:{$battleId}:{$casterType}:{$casterId}:{$eventId}";
+            $alreadyProcessing = Redis::set($processingKey, 1, 'NX', 'EX', 10);
             if (!$alreadyProcessing) {
                 Log::channel('battle_debug')->debug("Skill {$eventId} já está em execução, pulando...");
                 continue;
             }
 
-            $casterId = $event['caster_id'] ?? null;
-            $lockKey = "skill_lock:$battleId:$casterId";
-            $lockUntil = (float)(Redis::get($lockKey) ?? 0.0);
+            // === aplica o lock do caster IMEDIATAMENTE quando aceitamos/processamos a entrada ===
+            // Calcula duração do bloqueio do caster: pre + animation + post
+            $baseLockDuration = $preDelaySec + $animationSec + $postDelaySec; // em segundos
 
-            if ($lockUntil > $now) {
-                $event['ready_at'] = $lockUntil;
+            // Se o evento tiver lock_time explícito (ms) adicione (convertendo)
+            if ($skillLockMs > 0) {
+                $baseLockDuration += ceil($skillLockMs / 1000.0);
+            }
+
+            // Se o target já tem um lock no Redis (salvo pelo Lua), some a diferença positiva
+            if ($targetLockUntil > $now) {
+                $extra = $targetLockUntil - $now;
+                $baseLockDuration += $extra;
+            }
+
+            // Define o finalLock relativo ao agora
+            $finalLock = $now + $baseLockDuration;
+
+            // Só setar se realmente houver duração positiva
+            $expire = (int) ceil($finalLock - $now);
+            if ($expire > 0) {
+                // grava o timestamp final no key e define EX para limpeza automática
+                Redis::set($casterLockKey, $finalLock, 'EX', $expire);
+            }
+
+            // Fase pre_delay -> animation
+            if ($event['phase'] === 'pre_delay') {
+                $event['phase'] = 'animation';
+                $event['ready_at'] = $newReadyAt + $animationSec;
                 Redis::hset($hashKey, $eventId, json_encode($event));
                 Redis::zadd($zsetKey, [$eventId => $event['ready_at']]);
-                continue;
+                $this->notifyBattle($battleId, 'animation', $event);
+                $processed = true;
             }
-            Log::channel('battle_debug')->debug('[BattlePending] Checking event', [
-                'battle' => $battleId,
-                'eventId' => $eventId,
-                'event' => $event,
-                'now' => $now,
-                'ready_at' => $event['ready_at']
-            ]);
-            if ($now >= $event['ready_at']) {
-                if ($event['phase'] === 'pre_delay') {
-                    $event['phase'] = 'animation';
-                    $event['ready_at'] = $now + ($event['animation_time'] / 1000.0);
-                    Redis::hset($hashKey, $eventId, json_encode($event));
-                    Redis::zadd($zsetKey, [$eventId => $event['ready_at']]);
-                    $this->notifyBattle($battleId, 'animation', $event);
-                    $processed = true;
-                } elseif ($event['phase'] === 'animation') {
-                    $someoneDied = $this->finalizeSkillCast($battleId, $event);
-                    if ($someoneDied) $someoneDiedAny = true;
-                    Redis::hdel($hashKey, $eventId);
-                    Redis::zrem($zsetKey, $eventId);
-                    $processed = true;
-                }
+            // Fase animation -> finalize
+            elseif ($event['phase'] === 'animation') {
+                $someoneDied = $this->finalizeSkillCast($battleId, $event);
+                if ($someoneDied) $someoneDiedAny = true;
+
+                // Remove evento da fila
+                Redis::hdel($hashKey, $eventId);
+                Redis::zrem($zsetKey, $eventId);
+
+                // Limpeza do processingKey
+                Redis::del($processingKey);
+
+                $processed = true;
             }
         }
 
@@ -83,6 +130,8 @@ class BattleManager extends BattleManagerHelpers
 
         return $processed;
     }
+
+
 
 
 
@@ -691,6 +740,7 @@ class BattleManager extends BattleManagerHelpers
         $pendingActionsKey = "battle:$battleId:pending_actions";
         $pendingActions = Redis::hgetall($pendingActionsKey);
 
+
         $processed = false;
         $needCheckBattleEnd = false;
 
@@ -706,6 +756,14 @@ class BattleManager extends BattleManagerHelpers
             if (!isset($players[$instanceId])) {
                 // cleanup: remove pending action keyed por instanceId
                 Redis::hdel($pendingActionsKey, $instanceId);
+                continue;
+            }
+
+            // 1) lock por instance para evitar dois workers processando a mesma entry
+            $processingKey = "processing_action:{$battleId}:{$instanceId}";
+            $got = Redis::set($processingKey, 1, 'NX', 'EX', 5); // TTL curto — ajuste ao seu tick
+            if (!$got) {
+                Log::channel('battle_debug')->debug("[processPendingActions] Instance {$instanceId} já em processamento, pulando.");
                 continue;
             }
 
@@ -746,7 +804,8 @@ class BattleManager extends BattleManagerHelpers
                     ]);
 
                     $battleActions->executeAction($caster, $skillId, $targetRef, $battleId, 'character', $t['category']);
-
+                    // <-- AQUI: removemos a pending_action IMEDIATAMENTE, pois já movemos a ação para pending_skills
+                    Redis::hdel($pendingActionsKey, $instanceId);
                     // atualiza estado local com a "fresh" entidade do Redis
                     $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                     if ($freshJson) {

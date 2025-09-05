@@ -84,19 +84,30 @@ class BattleManagerHelpers
         $actionInfoUse = '';
         $actionInfoResult = '';
 
+        // Pega nome da skill se houver
+        $skillName = null;
+        if (!empty($context['skill_id'])) {
+            $skillService = new \App\Services\Battle\SkillService();
+            $skillName = $skillService->getSkillName(
+                (int)$context['skill_id'],
+                $battleId,
+                $context['caster_type'] ?? null,
+                $context['caster_id'] ?? null
+            );
+        }
+
         switch ($stage) {
             case 'pre_delay':
-                $actionInfoUse = "{$context['caster_type']} {$context['caster_id']} começou a conjurar skill {$context['skill_id']}";
-                $globalMessages[] = "Skill {$context['skill_id']} em preparação";
+                $actionInfoUse = "{$context['caster_type']} {$context['caster_id']} começou a conjurar skill {$skillName}";
+                $globalMessages[] = "Skill {$skillName} em preparação";
                 break;
 
             case 'animation':
-                $actionInfoUse = "{$context['caster_type']} {$context['caster_id']} está animando skill {$context['skill_id']}";
-                $globalMessages[] = "Skill {$context['skill_id']} entrou na fase de animação";
+                $actionInfoUse = "{$context['caster_type']} {$context['caster_id']} está animando skill {$skillName}";
+                $globalMessages[] = "Skill {$skillName} entrou na fase de animação";
                 break;
 
             case 'result':
-                // aqui você pode reaproveitar a lógica do executeAction para montar mensagens
                 $actionInfoUse = $context['actionInfoUse'] ?? '';
                 $actionInfoResult = $context['actionInfoResult'] ?? '';
                 $globalMessages = $context['globalMessages'] ?? [];
@@ -106,7 +117,9 @@ class BattleManagerHelpers
                 $globalMessages = $context['errors'] ?? ["Erro inesperado"];
                 break;
         }
+
         Log::info("Context de NotifyBattle = " . json_encode($context));
+
         $updatePayload = [
             'players' => $context['players'] ?? [],
             'enemies' => $context['enemies'] ?? [],
@@ -124,6 +137,7 @@ class BattleManagerHelpers
             'context' => $context,
         ]);
     }
+
 
     protected function rebuildAndCheckBattle(string $battleId)
     {
