@@ -352,6 +352,70 @@ class BattleWithMonsterHandler
             ]);
         }
 
+        // === NOVO: carregar consumíveis equipados ===
+        try {
+            if ($characterModel) {
+                $equippedConsumables = $characterModel->battlePack
+                    ? $characterModel->battlePack->slots()->with('consumableItem.consumable')->get()
+                    : collect();
+
+                $consumablesForRedis = [];
+
+                foreach ($equippedConsumables as $slot) {
+                    if (!$slot->consumableItem || !$slot->consumableItem->consumable) {
+                        continue;
+                    }
+
+                    $consumable = $slot->consumableItem->consumable;
+                    $item = $slot->consumableItem;
+
+                    $consumablesForRedis[$item->id] = [
+                        'id'          => $item->id,
+                        'name'        => $consumable->name,
+                        'description' => $consumable->description,
+                        'effect_type' => $consumable->effect_type,
+                        'effect_value' => $consumable->effect_value,
+                        'quantity'    => $item->quantity,
+                        'slot_index'  => $slot->slot_index,
+                    ];
+                }
+
+                $instanceConsumablesKey = "battle:$battleId:character:{$playerInstanceId}:consumables";
+
+                // usamos HSET para facilitar decremento em runtime
+                if (!empty($consumablesForRedis)) {
+                    Redis::hset(
+                        $instanceConsumablesKey,
+                        ...collect($consumablesForRedis)->map(function ($c) {
+                            return [$c['id'], json_encode($c, JSON_UNESCAPED_UNICODE)];
+                        })->flatten()->toArray()
+                    );
+
+                    Log::info("Consumables loaded into battle instance", [
+                        'battle' => $battleId,
+                        'character_id' => $characterId,
+                        'instance_id' => $playerInstanceId,
+                        'consumables_count' => count($consumablesForRedis),
+                    ]);
+                } else {
+                    Redis::del($instanceConsumablesKey);
+                    Log::info("No consumables equipped for character", [
+                        'battle' => $battleId,
+                        'character_id' => $characterId,
+                        'instance_id' => $playerInstanceId,
+                    ]);
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::error("Failed to load consumables for battle instance", [
+                'battle' => $battleId,
+                'character_id' => $characterId,
+                'instance_id' => $playerInstanceId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+
         // 8️⃣ Inicializar stamina do monstro
         $monsterStaminaData = $this->staminaService->initializeStamina(
             $now,

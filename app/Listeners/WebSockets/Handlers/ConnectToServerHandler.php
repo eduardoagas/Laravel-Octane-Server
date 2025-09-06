@@ -119,7 +119,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
             $battlePack = $character->battlePack()->create(['max_slots' => 4]);
 
             // --- Helpers ---
-            (new CharacterHelpers())->setupConsumables($consumablesInventory, $battlePack);
+            (new CharacterHelpers())->setupConsumables($consumablesInventory, $battlePack, $character);
             (new CharacterHelpers())->setupSkillsAndSouls($character);
             return $character;
         });
@@ -193,12 +193,17 @@ class CharacterHelpers
         ]
     ];
 
-    public function setupConsumables($inventory, $battlePack)
+    public function setupConsumables($inventory, $battlePack, Character $character)
     {
         $equippedSlots = [
             'Health Potion' => 0,
             'Stamina Tonic' => 1,
         ];
+
+        $characterId = $character->id;
+        $consumablesKey = "battle:{$characterId}:character:{$characterId}:consumables";
+
+        $consumablesForRedis = [];
 
         foreach (self::$defaultConsumables as $data) {
             $consumable = Consumable::firstOrCreate(
@@ -215,13 +220,31 @@ class CharacterHelpers
                 'quantity'      => $data['quantity'],
             ]);
 
+            $slotIndex = $equippedSlots[$data['name']] ?? null;
+
             if (isset($equippedSlots[$data['name']])) {
                 $battlePack->slots()->create([
                     'consumable_item_id' => $item->id,
                     'slot_index'         => $equippedSlots[$data['name']],
                 ]);
             }
+
+
+            $consumablesForRedis[$item->id] = [
+                'id'          => $item->id,
+                'name'        => $consumable->name,
+                'description' => $consumable->description,
+                'effect_type' => $consumable->effect_type,
+                'effect_value' => $consumable->effect_value,
+                'quantity'    => $item->quantity,
+                'slot_index'  => $slotIndex,
+            ];
         }
+
+        // --- Salva no Redis como hash (mais prático pra atualizar quantities) ---
+        Redis::hset($consumablesKey, ...collect($consumablesForRedis)->map(function ($c) {
+            return [$c['id'], json_encode($c, JSON_UNESCAPED_UNICODE)];
+        })->flatten()->toArray());
     }
 
     public function setupSkillsAndSouls(Character $character)
