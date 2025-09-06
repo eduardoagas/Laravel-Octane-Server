@@ -96,7 +96,9 @@ local function nano_random()
     end
     local seed = secs * 1000000 + ((micros + inc) % 1000000)
     math.randomseed(seed)
-    math.random(); math.random()
+math.random();
+math.random()
+
     return math.random()
 end
 
@@ -204,8 +206,17 @@ local function apply_debuff(casterId, casterType, targetId, stat, power, duratio
     end
 
     local stat_chance = caster_luk / (caster_luk + target_vit)
-    local base_chances = { weak = 0.10, medium = 0.20, strong = 0.50 }
-    local min_chances = { weak = 0.00, medium = 0.01, strong = 0.10 }
+local base_chances = {
+    weak = 0.10,
+    medium = 0.20,
+    strong = 0.50
+}
+local min_chances = {
+    weak = 0.00,
+    medium = 0.01,
+    strong = 0.10
+}
+
     local chance = base_chances[debuff_strength] * stat_chance
     chance = math.max(min_chances[debuff_strength], math.min(0.99, chance))
 
@@ -416,13 +427,11 @@ elseif skillType == "heal" then
     end
 
 elseif skillType == "stamina" then
-    -- skillType "stamina" usado para itens que alteram stamina do target.
-    -- power pode ser positivo (recover) ou negativo (drain).
-    local currentSt = tonumber(stats["stamina"] or 0)
-    local newSt, oldSt = apply_stamina_delta(targetKey, battleId, targetId, stats, power)
-    stats["stamina"] = newSt
-    result["stamina_delta"] = power
-    result["current_stamina"] = newSt
+    -- Delegado ao PHP: não tocar stamina aqui para evitar duplicação.
+    -- PHP deve chamar consume_stamina.lua ou StaminaService::consumeStamina após este script.
+    result["stamina_delegated_to_php"] = true
+    result["stamina_note"] = "handled_by_php"
+    -- não alteramos stats["stamina"] aqui
 
 elseif skillType == "revive" then
     local currentHpShadow = tonumber(stats["current_hp"] or 0)

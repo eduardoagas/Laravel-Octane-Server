@@ -149,7 +149,7 @@ class SkillService
                 $casterId,
                 $requiredStamina,
                 $casterType
-            );
+            )['current_after'];
 
             if ($currentAfterConsumption === null) {
                 throw new InsufficientStaminaException(

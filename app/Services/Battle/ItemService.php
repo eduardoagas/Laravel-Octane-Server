@@ -86,30 +86,58 @@ class ItemService
         string $targetType
     ): array {
         $casterId = (string)$caster['instanceId'];
+        $item = $this->findConsumableInRedis($battleId, $casterType, $casterId, $itemId)
+            ?? self::$consumables[$itemId] ?? null;
+        if (!$item) throw new \InvalidArgumentException("Consumable {$itemId} not found");
 
-        // 1️⃣ Busca no Redis
-        $item = $this->findConsumableInRedis($battleId, $casterType, $casterId, $itemId);
-
-        // 2️⃣ Fallback para array estático
-        if (!$item) {
-            if (isset(self::$consumables[$itemId])) {
-                $item = self::$consumables[$itemId];
-                Log::warning("[ConsumableService] Consumable {$itemId} não encontrado no Redis, usando fallback.");
-            } else {
-                throw new \InvalidArgumentException("Consumable {$itemId} not found");
-            }
-        }
-
-        $casterStats = $caster['stats'] ?? [];
-        if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
-
-        // Campos neutros testáveis se não existirem
-        $item['duration'] = $item['duration'] ?? 1;
-        $item['lock_time'] = $item['lock_time'] ?? 0;
-
-        // Lua script (pode ser o mesmo de skills, adaptado para consumables)
+        // normaliza targetKey
         $targetKey = ($targetType ?? 'character') === 'monster' ? 'monsters' : 'characters_data';
         $redisKey = "battle:$battleId:$targetKey";
+
+        // --- Se for stamina, delegar ao PHP (uso do StaminaService) ---
+        if (($item['effect_type'] ?? '') === 'stamina') {
+            // amount: power positive => recover, negative => drain (mantém tua convenção)
+            $amount = (float)($item['effect_value'] ?? 0);
+
+            if ($amount > 0) {
+                // cura stamina: passa valor negativo para o consumeStamina (que subtrai, logo vira soma)
+                $amount = -$amount;
+            }
+
+            // Chama StaminaService (que internamente faz Redis::eval do consume_stamina.lua)
+            // *Sugestão*: ajustar StaminaService::consumeStamina para retornar o decoded array com used/current_after.
+            $stRes = StaminaService::consumeStamina($battleId, (string)$target['instanceId'], $amount, $targetType);
+
+            if ($stRes === null || (isset($stRes['error']) && $stRes['error'])) {
+                // tratar erro/insuficiente - comportamente que você preferir
+                throw new \RuntimeException("Stamina operation failed: " . json_encode($stRes));
+            }
+
+            // se consumeStamina devolver somente float, adaptação: $currentAfter = $stRes (float)
+            // se devolver array (recomendado), use $stRes['current_after']
+            $currentAfter = is_array($stRes) ? ($stRes['current_after'] ?? null) : $stRes;
+
+            // Atualiza o entity stats na hash de batalha para manter compatibilidade
+            $rawEntity = Redis::hget($redisKey, $target['instanceId']);
+            if ($rawEntity) {
+                $entity = json_decode($rawEntity, true);
+                if (!is_array($entity)) $entity = [];
+                if (!isset($entity['stats']) || !is_array($entity['stats'])) $entity['stats'] = [];
+                $entity['stats']['stamina'] = $currentAfter;
+                Redis::hset($redisKey, $target['instanceId'], json_encode($entity));
+            }
+
+            return [
+                'battle_id' => $battleId,
+                'caster_id' => $casterId,
+                'item_id' => $itemId,
+                'stamina_delta' => $item['effect_value'] ?? $amount,
+                'current_stamina' => $currentAfter,
+                'lua_exec_ms' => null,
+            ];
+        }
+
+        // --- caso não seja stamina: comportamento antigo (chama lua) ---
         $luaPath = storage_path("redis_scripts/battle_skill_indexed.lua");
         $luaScript = file_get_contents($luaPath);
 
@@ -125,12 +153,12 @@ class ItemService
             $item['duration'],
             $item['level'] ?? 1,
             $casterType,
-            null,           // tick_skill_id
-            null,           // tick_interval
+            null, // tick_skill_id
+            null, // tick_interval
             $battleId,
-            '0',            // stackable
-            1,              // max_stacks
-            'refresh',      // stack_behavior
+            '0', // stackable
+            1,   // max_stacks
+            'refresh', // stack_behavior
             $item['lock_time']
         );
 

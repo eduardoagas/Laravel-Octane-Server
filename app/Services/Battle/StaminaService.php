@@ -245,7 +245,9 @@ class StaminaService
             ]);
 
             // Retorna a stamina atual após o consumo (pode ser usada para broadcast imediato)
-            return $currentAfter;
+            //return $currentAfter;
+            // retorna o array completo para o caller (mais info)
+            return $decoded;
         } catch (\Throwable $e) {
             Log::error("[consumeStamina] Erro ao executar script Lua: " . $e->getMessage(), [
                 'exception' => $e
