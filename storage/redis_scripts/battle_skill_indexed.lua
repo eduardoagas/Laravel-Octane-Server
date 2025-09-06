@@ -1,23 +1,24 @@
 -- storage/redis_scripts/battle_skill_indexed.lua
 -- Versão index-based com suporte a stackable buffs/debuffs
+-- Reutilizável tanto para "skills" quanto para "items/consumables".
 -- PER-INSTANCE: escreve/ler buffs/debuffs em <targetKey>:<instanceId>:buffs|debuffs
 -- KEYS[1] = target hash (ex: battle:<id>:characters_data OR battle:<id>:monsters)
 -- ARGV:
---  1 = skillType
+--  1 = skillType / effect_type (ex: "physical","magical","heal","stamina","buff","debuff","revive","percentageDamage", etc.)
 --  2 = casterId
 --  3 = targetId (instanceId)
---  4 = power
---  5 = stat
---  6 = duration
---  7 = level
+--  4 = power (damage / heal / effect_value)
+--  5 = stat (stat afetado para buff/debuff, ou "" se não aplicável)
+--  6 = duration (em segundos ou nil)
+--  7 = level (opcional)
 --  8 = casterType ("character"|"monster")
---  9 = tickSkillId
--- 10 = tickInterval
+--  9 = tickSkillId (opcional)
+-- 10 = tickInterval (opcional)
 -- 11 = battleId
 -- 12 = stackable ("1" ou "0")
 -- 13 = max_stacks
 -- 14 = stack_behavior ("add"|"refresh"|"replace")
--- ARGV[15] = lock_time (em milissegundos, opcional)
+-- 15 = lock_time (em milissegundos, opcional)
 
 local targetKey = KEYS[1]
 local skillType = ARGV[1] or ""
@@ -119,7 +120,6 @@ end
 
 -- helper: update atômico de HP (usando targetKey como base)
 local function apply_hp_delta(targetKey, battleId, targetId, stats, delta)
-    -- hpKey: ex: battle:<id>:characters_data:<targetId>:hp  (consistente com seu namespace por-target)
     local hpKey = targetKey .. ":" .. tostring(targetId) .. ":hp"
     local currentHp = redis.call("GET", hpKey)
 
@@ -137,6 +137,27 @@ local function apply_hp_delta(targetKey, battleId, targetId, stats, delta)
     redis.call("SET", hpKey, newHp)
 
     return newHp, currentHp
+end
+
+-- helper: update atômico de STAMINA (usando targetKey como base)
+local function apply_stamina_delta(targetKey, battleId, targetId, stats, delta)
+    local stKey = targetKey .. ":" .. tostring(targetId) .. ":stamina"
+    local currentSt = redis.call("GET", stKey)
+
+    if not currentSt then
+        currentSt = tonumber(stats["stamina"] or 0)
+        redis.call("SET", stKey, currentSt)
+    else
+        currentSt = tonumber(currentSt)
+    end
+
+    local newSt = currentSt + delta
+    if newSt < 0 then
+        newSt = 0
+    end
+    redis.call("SET", stKey, newSt)
+
+    return newSt, currentSt
 end
 
 -- resolve caster explicitly (no scanning)
@@ -257,7 +278,6 @@ local function apply_debuff(casterId, casterType, targetId, stat, power, duratio
             redis.call("HSET", debuffsHashKey, field, cjson.encode(debuff))
             redis.call("SADD", debuffIndexInstance, field)
             if debuff["stat"] == "death" and tonumber(stats["current_hp"] or 0) > 0 then
-                -- somente marca shadow aqui; se quiser forçar hpKey = 0, chame SET no hpKey explicitamente
                 apply_hp_delta(targetKey, battleId, targetId, stats, -999999)
                 stats["current_hp"] = 0
                 someoneDied = true
@@ -349,7 +369,8 @@ local function apply_buff(casterId, casterType, targetId, stat, power, duration)
     end
 end
 
--- === Skill handling (usando apply_hp_delta com targetKey) ===
+-- === Skill/Item handling ===
+-- Note: 'skillType' covers both skill types and item effect types.
 if skillType == "physical" or skillType == "magical" then
     local defense = get_defense(stats, skillType)
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
@@ -394,6 +415,15 @@ elseif skillType == "heal" then
         result["healed_amount"] = healPower
     end
 
+elseif skillType == "stamina" then
+    -- skillType "stamina" usado para itens que alteram stamina do target.
+    -- power pode ser positivo (recover) ou negativo (drain).
+    local currentSt = tonumber(stats["stamina"] or 0)
+    local newSt, oldSt = apply_stamina_delta(targetKey, battleId, targetId, stats, power)
+    stats["stamina"] = newSt
+    result["stamina_delta"] = power
+    result["current_stamina"] = newSt
+
 elseif skillType == "revive" then
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
     if currentHpShadow == 0 then
@@ -412,7 +442,7 @@ elseif skillType == "debuff" then
 
 else
     return cjson.encode({
-        error = "Unknown skill type: " .. tostring(skillType)
+        error = "Unknown skill/item type: " .. tostring(skillType)
     })
 end
 
@@ -436,6 +466,10 @@ redis.call("HSET", targetKey, targetId, cjson.encode(entity))
 
 result["target_died"] = someoneDied
 result["current_hp"] = math.floor(stats["current_hp"] or 0)
+-- garante que current_stamina esteja presente sempre (se não definido, tenta ler do stats)
+if result["current_stamina"] == nil then
+    result["current_stamina"] = tonumber(stats["stamina"] or 0)
+end
 
 local t2 = redis.call("TIME")
 local exec_ms = (t2[1] - t_start[1]) * 1000 + (t2[2] - t_start[2]) / 1000

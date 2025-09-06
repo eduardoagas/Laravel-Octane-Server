@@ -21,6 +21,7 @@ class UnityEventDispatcher
             'connect_to_server' => \App\Listeners\WebSockets\Handlers\ConnectToServerHandler::class,
             'battle_with_monster' => \App\Listeners\WebSockets\Handlers\BattleWithMonsterHandler::class,
             'can_use_skill' => \App\Listeners\WebSockets\Handlers\CanUseSkillHandler::class,
+            'can_use_item' => \App\Listeners\WebSockets\Handlers\CanUseItemHandler::class,
             'skill_in_execution' => \App\Listeners\WebSockets\Handlers\SkillInExecutionHandler::class,
             'can_change_soul' => \App\Listeners\WebSockets\Handlers\CanChangeSoulHandler::class,
             'battle_ack_received' => \App\Listeners\WebSockets\Handlers\BattleAckHandler::class,

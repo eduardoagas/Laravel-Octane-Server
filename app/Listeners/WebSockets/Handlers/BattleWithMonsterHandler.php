@@ -66,6 +66,15 @@ class BattleWithMonsterHandler
         Redis::sadd("battle:$battleId:characters_instances", (string)$playerInstanceId);
         Redis::hset("battle:$battleId:characters_data", (string)$playerInstanceId, json_encode($characterPayload, JSON_UNESCAPED_UNICODE));
 
+        // 🔹 NOVO: mapeamento instanceId -> characterId
+        $instanceMapKey = "battle:$battleId:instance_map";
+        Redis::hset($instanceMapKey, (string)$playerInstanceId, $characterId);
+        Log::info("Instance map updated", [
+            'battle' => $battleId,
+            'instance_id' => $playerInstanceId,
+            'character_id' => $characterId
+        ]);
+
         // 6️⃣ Vincular battle_instance_id na sessão
         Redis::hset("session:$token", 'battle_instance_id', $battleId);
 

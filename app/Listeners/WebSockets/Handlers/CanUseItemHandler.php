@@ -25,9 +25,9 @@ class CanUseItemHandler implements HandlesUnityEvent
 
         if (!$battleId || !$characterId || $itemIndex === null) {
             $connection->send(json_encode([
-                'error' => 'Dados inválidos: battle_id, character_id ou skill_index ausentes'
+                'error' => 'Dados inválidos: battle_id, character_id ou item_index ausentes'
             ]));
-            Log::warning("[CanUseSkillHandler] Dados inválidos", compact('battleId', 'characterId', 'skillIndex'));
+            Log::warning("[CanUseItemHandler] Dados inválidos", compact('battleId', 'characterId', 'itemIndex'));
             return;
         }
 
@@ -44,19 +44,19 @@ class CanUseItemHandler implements HandlesUnityEvent
 
         if ($playerInstanceId === null) {
             $connection->send(json_encode(['error' => 'Character instance not found in this battle']));
-            Log::error("[CanUseSkillHandler] Não encontrou instanceId para character_id no battle", [
+            Log::error("[CanUseItemHandler] Não encontrou instanceId para character_id no battle", [
                 'battle' => $battleId,
                 'character_id' => $characterId,
             ]);
             return;
         }
 
-        Log::info("[CanUseSkillHandler] Mapeado characterId {$characterId} -> instanceId {$playerInstanceId} (battle {$battleId})");
+        Log::info("[CanUseItemHandler] Mapeado characterId {$characterId} -> instanceId {$playerInstanceId} (battle {$battleId})");
 
         // Checa se existe item em execução (usando instanceId agora)
         $executionKey = "battle:$battleId:skill_in_execution";
         if (Redis::exists($executionKey . ":{$playerInstanceId}")) {
-            Log::info("[CanUseSkillHandler] Já há item em execução para instance {$playerInstanceId}");
+            Log::info("[CanUseItemHandler] Já há item em execução para instance {$playerInstanceId}");
             return;
         }
 
@@ -66,7 +66,7 @@ class CanUseItemHandler implements HandlesUnityEvent
             $connection->send(json_encode([
                 'error' => 'Itens não carregadas para o personagem nesta batalha'
             ]));
-            Log::warning("[CanUseSkillHandler] items não carregadas no Redis para instance", [
+            Log::warning("[CanUseItemHandler] items não carregadas no Redis para instance", [
                 'battle' => $battleId,
                 'instanceId' => $playerInstanceId,
             ]);
@@ -75,7 +75,7 @@ class CanUseItemHandler implements HandlesUnityEvent
 
         $itemsArray = json_decode($itemsRaw, true);
         if (!is_array($itemsArray)) {
-            $connection->send(json_encode(['error' => 'Dados de skills inválidos']));
+            $connection->send(json_encode(['error' => 'Dados de items inválidos']));
             Log::error("[CanUseItemHandler] items JSON inválido para instance", [
                 'battle' => $battleId,
                 'instanceId' => $playerInstanceId,
@@ -115,13 +115,27 @@ class CanUseItemHandler implements HandlesUnityEvent
         $canUse = ($stamina >= $cost);*/
         $canUse = true; //mudar checks
 
+        // 🔹 Valida se o item tem quantidade suficiente
+        $quantity = (int)($item['quantity'] ?? 0);
+        if ($quantity <= 0) {
+            $connection->send(json_encode([
+                'error' => "Item {$item['id']} não possui quantidade suficiente para uso"
+            ]));
+            Log::warning("[CanUseItemHandler] Tentativa de usar item sem quantidade disponível", [
+                'battle' => $battleId,
+                'instanceId' => $playerInstanceId,
+                'item' => $item,
+            ]);
+            return;
+        }
+
         // Cache temporário da ação se possível (usa instanceId)
         $pendingCacheKey = "battle:$battleId:pending_actions_cache:{$playerInstanceId}";
         if ($canUse) {
             $actionPayload = [
                 'caster_id' => $playerInstanceId,           // instanceId
                 'caster_type' => 'character',
-                'item_id' => $item['id'],                // id real do skill no DB
+                'item_id' => $item['id'],                // id real do consumableitem no DB
                 'target_type' => $targetType,
                 'target_id' => $targetId,
                 'timestamp' => time(),
@@ -144,7 +158,7 @@ class CanUseItemHandler implements HandlesUnityEvent
         $connection->send(json_encode([
             'event' => 'itemQueued',
             'data' => [
-                'itemId' => $skill['id'] ?? null,
+                'itemId' => $item['id'] ?? null,
             ]
         ]));
     }

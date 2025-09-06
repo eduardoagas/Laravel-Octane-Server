@@ -309,6 +309,7 @@ class BattleManager extends BattleManagerHelpers
                             $someoneDied = \App\Battle\BattleActions::executeAction(
                                 $resolvedCaster,
                                 $skillId,
+                                null,
                                 $targetRef,
                                 $battleId,
                                 $resolvedCaster['type'],
@@ -429,6 +430,7 @@ class BattleManager extends BattleManagerHelpers
                             \App\Battle\BattleActions::executeAction(
                                 $resolvedCaster,
                                 $skillId,
+                                null,
                                 $targetRef,
                                 $battleId,
                                 $resolvedCaster['type'],
@@ -695,7 +697,7 @@ class BattleManager extends BattleManagerHelpers
 
                     $monster['isCasting'] = true; // impede múltiplas execuções simultâneas
                     Redis::hset("battle:$battleId:monsters", $monsterKey, json_encode($monster));
-                    $battleActions->executeAction($monster, $skillId, $targetRef, $battleId, 'monster', $t['category']);
+                    $battleActions->executeAction($monster, $skillId, null, $targetRef, $battleId, 'monster', $t['category']);
 
 
                     $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
@@ -785,7 +787,14 @@ class BattleManager extends BattleManagerHelpers
             ]);
 
             try {
-                $skillId = (int)($action['skill_id'] ?? 0);
+                $skillId = isset($action['skill_id']) ? (int)$action['skill_id'] : null;
+                $itemId  = isset($action['item_id']) ? (int)$action['item_id'] : null;
+
+                if ($skillId === null && $itemId === null) {
+                    Log::warning("[processPendingActions] Nenhum skill_id ou item_id para instance $instanceId");
+                    Redis::hdel($pendingActionsKey, $instanceId);
+                    continue;
+                }
                 $battleActions = new \App\Battle\BattleActions();
 
                 foreach ($targets as $t) {
@@ -798,12 +807,21 @@ class BattleManager extends BattleManagerHelpers
                     Log::channel('battle_debug')->info("[processPendingActions] Executing action", [
                         'battleId' => $battleId,
                         'casterInstanceId' => $instanceId,
-                        'skillId' => $skillId,
+                        'skillId' => $skillId ?? "null",
+                        'itemId' => $itemId ?? "null",
                         'targetKey' => $targetKey,
                         'targetId' => $targetId,
                     ]);
 
-                    $battleActions->executeAction($caster, $skillId, $targetRef, $battleId, 'character', $t['category']);
+                    $battleActions->executeAction(
+                        $caster,
+                        $skillId,
+                        $itemId,
+                        $targetRef,
+                        $battleId,
+                        'character',
+                        $t['category']
+                    );
                     // <-- AQUI: removemos a pending_action IMEDIATAMENTE, pois já movemos a ação para pending_skills
                     Redis::hdel($pendingActionsKey, $instanceId);
                     // atualiza estado local com a "fresh" entidade do Redis
