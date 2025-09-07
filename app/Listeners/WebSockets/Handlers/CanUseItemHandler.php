@@ -14,7 +14,7 @@ class CanUseItemHandler implements HandlesUnityEvent
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
     {
         $data = $payload['data'] ?? [];
-        $itemIndex = $data['item_id'] ?? null; // índice no array de item do Redis
+        $slotIndex = $data['item_id'] ?? null; // índice no array de item do Redis
         $targetType = $data['target_type'] ?? null; // 'enemy' ou 'player'
         $targetId = $data['target_id'] ?? null;
 
@@ -23,9 +23,9 @@ class CanUseItemHandler implements HandlesUnityEvent
         $battleId = $session['battle_instance_id'] ?? null;
         $characterId = isset($session['character_id']) ? (int)$session['character_id'] : null; // DB id
 
-        if (!$battleId || !$characterId || $itemIndex === null) {
+        if (!$battleId || !$characterId || $slotIndex === null) {
             $connection->send(json_encode([
-                'error' => 'Dados inválidos: battle_id, character_id ou item_index ausentes'
+                'error' => 'Dados inválidos: battle_id, character_id ou slot_index ausentes'
             ]));
             Log::warning("[CanUseItemHandler] Dados inválidos", compact('battleId', 'characterId', 'itemIndex'));
             return;
@@ -61,7 +61,7 @@ class CanUseItemHandler implements HandlesUnityEvent
         }
 
         // 1️⃣ Busca items do Redis usando instanceId
-        $itemsRaw = Redis::get("battle:$battleId:character:{$playerInstanceId}:consumables");
+        $itemsRaw = Redis::hgetall("battle:$battleId:character:{$playerInstanceId}:consumables");
         if (!$itemsRaw) {
             $connection->send(json_encode([
                 'error' => 'Itens não carregadas para o personagem nesta batalha'
@@ -73,30 +73,25 @@ class CanUseItemHandler implements HandlesUnityEvent
             return;
         }
 
-        $itemsArray = json_decode($itemsRaw, true);
-        if (!is_array($itemsArray)) {
-            $connection->send(json_encode(['error' => 'Dados de items inválidos']));
-            Log::error("[CanUseItemHandler] items JSON inválido para instance", [
+        // Procura item pelo slot_index
+        $item = null;
+        foreach ($itemsRaw as $json) {
+            $decoded = json_decode($json, true);
+            if (isset($decoded['slot_index']) && (int)$decoded['slot_index'] === (int)$slotIndex) {
+                $item = $decoded;
+                break;
+            }
+        }
+
+        if (!$item) {
+            $connection->send(json_encode(['error' => "Item com slot_index {$slotIndex} não encontrado"]));
+            Log::warning("[CanUseItemHandler] Slot_index inválido", [
                 'battle' => $battleId,
                 'instanceId' => $playerInstanceId,
-                'raw' => $itemsRaw,
+                'slot_index' => $slotIndex,
             ]);
             return;
         }
-
-        if (!array_key_exists($itemIndex, $itemsArray)) {
-            $connection->send(json_encode([
-                'error' => "Item com índice $itemIndex não encontrada"
-            ]));
-            Log::warning("[CanUseItemHandler] Índice de item inválido", [
-                'battle' => $battleId,
-                'instanceId' => $playerInstanceId,
-                'itemIndex' => $itemIndex,
-            ]);
-            return;
-        }
-
-        $item = $itemsArray[$itemIndex];
 
         // Checa stamina: usa instanceId e tipo 'character'
         /*try {

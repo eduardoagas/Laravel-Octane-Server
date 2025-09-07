@@ -420,10 +420,16 @@ elseif skillType == "heal" then
     local maxHp = tonumber(stats["hp"] or 100)
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
     if currentHpShadow > 0 then
-        local healPower = math.max(0, math.floor(power))
-        local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, healPower)
-        stats["current_hp"] = newHp
-        result["healed_amount"] = healPower
+         local healPower = math.max(0, math.floor(power))
+        -- calcula o novo HP sem ultrapassar o máximo
+        local effectiveHeal = math.min(healPower, maxHp - currentHpShadow)
+        if effectiveHeal > 0 then
+            local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, effectiveHeal)
+            stats["current_hp"] = newHp
+            result["healed_amount"] = effectiveHeal
+        else
+            result["healed_amount"] = 0
+        end
     end
 
 elseif skillType == "stamina" then
@@ -437,10 +443,16 @@ elseif skillType == "revive" then
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
     if currentHpShadow == 0 then
         local healRevive = math.floor(power)
-        local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, healRevive)
-        stats["current_hp"] = newHp
-        result["healed_amount"] = healRevive
-        result["revive_applied"] = true
+        -- calcula o novo HP sem ultrapassar o máximo
+        local effectiveHeal = math.min(healRevive, maxHp - currentHpShadow)
+        if effectiveHeal > 0 then
+            local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, effectiveHeal)
+            stats["current_hp"] = newHp
+            result["healed_amount"] = effectiveHeal
+            result["revive_applied"] = true
+        else
+            result["healed_amount"] = 0
+        end
     end
 
 elseif skillType == "buff" then

@@ -61,17 +61,16 @@ class ItemService
     private static function findConsumableInRedisStatic(string $battleId, string $casterType, string $casterId, int $itemId): ?array
     {
         $redisKey = "battle:{$battleId}:{$casterType}:{$casterId}:consumables";
-        $raw = Redis::get($redisKey);
-        if (!$raw) return null;
+        $itemsRaw = Redis::hgetall($redisKey);
+        if (!$itemsRaw) return null;
 
-        $arr = json_decode($raw, true);
-        if (!is_array($arr)) return null;
+        // Cada campo é id => json
+        if (!isset($itemsRaw[$itemId])) return null;
 
-        foreach ($arr as $c) {
-            if ((int)($c['id'] ?? -1) === $itemId) return $c;
-        }
-        return null;
+        $item = json_decode($itemsRaw[$itemId], true);
+        return is_array($item) ? $item : null;
     }
+
 
 
     /**
@@ -150,7 +149,7 @@ class ItemService
             $target['instanceId'],
             $item['effect_value'] ?? 0,
             $item['stat'] ?? '',
-            $item['duration'],
+            $item['duration'] ?? null,
             $item['level'] ?? 1,
             $casterType,
             null, // tick_skill_id
@@ -159,7 +158,7 @@ class ItemService
             '0', // stackable
             1,   // max_stacks
             'refresh', // stack_behavior
-            $item['lock_time']
+            $item['lock_time'] ?? null
         );
 
         $result = json_decode($evalResult, true);
@@ -174,6 +173,13 @@ class ItemService
             'target_hp' => $result['current_hp'] ?? null,
             'effect_applied' => $result['effect_applied'] ?? null,
             'lua_exec_ms' => $result['exec_time_ms'] ?? null,
+            'damage_dealt' => $result['damage_dealt'] ?? null,
+            'healed_amount' => $result['healed_amount'] ?? null,
+            'buff_applied' => $result['buff_applied'] ?? null,
+            'debuff_applied' => $result['debuff_applied'] ?? null,
+            'debuff_chance' => $result['debuff_chance'] ?? null,
+            'debuff_roll' => $result['debuff_roll'] ?? null,
+            'debuff_failed' => $result['debuff_failed'] ?? null,
         ];
     }
 
@@ -203,7 +209,7 @@ class ItemService
 
         // Apenas characters: NX para impedir enfileiramento duplicado
         if ($casterType === 'character') {
-            $executionKey = "battle:{$battleId}:item_in_execution:{$casterId}";
+            $executionKey = "battle:{$battleId}:skill_in_execution:{$casterId}";
             $ok = Redis::set($executionKey, 1, 'NX', 'EX', $ttlSec);
             if (!$ok) {
                 Log::channel('battle_debug')->debug("[startItemCast] Caster {$casterId} já está usando item, ignorando.");
@@ -240,17 +246,12 @@ class ItemService
     {
         $redisKey = "battle:{$battleId}:{$casterType}:{$casterId}:consumables";
         $rawItems = Redis::hgetall($redisKey);
-        if (!$rawItems) return null;
+        if (!$rawItems || !isset($rawItems[$itemId])) return null;
 
-        foreach ($rawItems as $field => $json) {
-            $item = json_decode($json, true);
-            if (isset($item['id']) && (int)$item['id'] === $itemId) {
-                return $item;
-            }
-        }
-
-        return null;
+        $item = json_decode($rawItems[$itemId], true);
+        return is_array($item) ? $item : null;
     }
+
 
 
     /**
