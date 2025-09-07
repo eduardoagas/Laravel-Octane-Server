@@ -2,7 +2,7 @@
 -- Versão: sem 'goto' (compatível com Lua 5.1), com top-level pcall e retornos seguros.
 -- KEYS[1] = redis hash key (battle:<id>:stamina_data)
 -- ARGV[1] = field (e.g. "character:123")
--- ARGV[2] = amount (number as string)
+-- ARGV[2] = amount (number as string). Convention: positive = consume, negative = recover
 -- ARGV[3] = now timestamp (number as string)
 
 local function safe_encode(tbl)
@@ -18,11 +18,9 @@ local function safe_encode(tbl)
     if not first then table.insert(parts, ",") end
     first = false
     local key = tostring(k)
-    -- numeric or boolean values are inserted raw, strings quoted
     if type(v) == "number" or type(v) == "boolean" then
       table.insert(parts, '"'..key..'":'..tostring(v))
     else
-      -- escape quotes roughly
       local s = tostring(v):gsub('"', '\\"')
       table.insert(parts, '"'..key..'":"'..s..'"')
     end
@@ -34,10 +32,10 @@ end
 local function main()
   local hkey = KEYS[1]
   local field = ARGV[1]
-  local amount = tonumber(ARGV[2] or "0")
-  local nowTs = tonumber(ARGV[3] or tostring(os.time()))
+  local amount = tonumber(ARGV[2] or "0") or 0
+  local nowTs = tonumber(ARGV[3] or tostring(os.time())) or os.time()
 
-  -- leitura do hash
+  -- leitura do hash (espera valor JSON por field)
   local raw = redis.call('HGET', hkey, field)
   if not raw then
     return safe_encode({ error = "no_data" })
@@ -72,7 +70,7 @@ local function main()
   local agiFactor = math.pow(math.min(dex / maxDex, 1.0), alpha)
   local baseRegen = minRate + (maxRate - minRate) * agiFactor -- stamina por segundo
 
-  -- effective current BEFORE recovered
+  -- effective current BEFORE recovered (initial - used)
   local cur = initial - used
   if cur < 0 then cur = 0 end
 
@@ -111,7 +109,6 @@ local function main()
         break
       end
     end
-    -- continua para próxima banda naturalmente
   end
 
   -- limitar ao máximo (segurança numérica)
@@ -121,8 +118,28 @@ local function main()
 
   local current = math.max(0, math.min(sMax, initial + recovered - used))
 
-  -- NOVO: custo 0 -> compacta estado e retorna
-  if amount <= 0 then
+  -- HANDLE RECOVERY (amount < 0): add stamina, cap at sMax
+  if amount < 0 then
+    local recoverAmount = -amount
+    local new_current = current + recoverAmount
+    if new_current > sMax then new_current = sMax end
+
+    -- compacta estado: seta initial_stamina para new_current, reset start_time/used
+    parsed['initial_stamina'] = new_current
+    parsed['start_time'] = nowTs
+    parsed['used_stamina_total'] = 0
+    redis.call('HSET', hkey, field, cjson.encode(parsed))
+
+    return safe_encode({
+      used = used,
+      recovered = recoverAmount,
+      current_after = new_current,
+      note = "recovered"
+    })
+  end
+
+  -- ZERO amount == compact state (não consome nem recupera, só re-sincr)
+  if amount == 0 then
     parsed['initial_stamina'] = current
     parsed['start_time'] = nowTs
     parsed['used_stamina_total'] = 0
@@ -135,7 +152,7 @@ local function main()
     })
   end
 
-  -- checagem suficiente (depois da regen)
+  -- amount > 0 => consumo normal (verifica suficiência)
   if current < amount then
     return safe_encode({ error = "insufficient", current = current })
   end

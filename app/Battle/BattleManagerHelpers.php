@@ -264,14 +264,22 @@ class BattleManagerHelpers
             if (array_key_exists('current_stamina', $result) && $result['current_stamina'] !== null) {
                 $casterCurrentStamina = $result['current_stamina'];
             }
-            if (isset($result['used_stamina_total'])) {
-                $resCasterId = (string)($result['caster_id'] ?? '');
-                if ($resCasterId !== '') {
-                    $staminaUpdates[$resCasterId] = [
-                        'type' => $casterType,
-                        'used_stamina_total' => (float)$result['used_stamina_total'],
-                        'current_stamina' => array_key_exists('current_stamina', $result) ? $result['current_stamina'] : null,
+            // Mantém o registro de used_stamina_total tanto do caster quanto do target
+            foreach (['caster', 'target'] as $role) {
+                $resId = (string)($result["{$role}_id"] ?? '');
+                if ($resId !== '') {
+                    $resType = $role === 'caster' ? $casterType : $targetType;
+                    $staminaKey = "{$resType}:{$resId}"; // chave combinada tipo:id
+                    $staminaUpdates[$staminaKey] = [
+                        'used_stamina_total' => (float)($result['used_stamina_total'] ?? 0),
+                        'current_stamina' => $result['current_stamina'] ?? null,
                     ];
+
+                    Log::channel('battle_debug')->info("[finalizeSkillCast][StaminaUpdates] {$role}", [
+                        'battle' => $battleId,
+                        'staminaKey' => $staminaKey,
+                        'staminaUpdate' => $staminaUpdates[$staminaKey]
+                    ]);
                 }
             }
 
@@ -336,15 +344,16 @@ class BattleManagerHelpers
             ];
 
             $playerIdKey = (string)$playerId;
-            if (isset($staminaUpdates[$playerIdKey]) && $staminaUpdates[$playerIdKey]['type'] === 'character') {
-                $stRaw = Redis::hget("battle:$battleId:stamina_data", "character:$playerIdKey");
+            $playerStaminaKey = "character:{$playerIdKey}";
+            if (isset($staminaUpdates[$playerStaminaKey])) {
+                $stRaw = Redis::hget("battle:$battleId:stamina_data", $playerStaminaKey);
                 $stParsed = is_string($stRaw) ? json_decode($stRaw, true) ?? [] : $stRaw;
 
                 $playerPayload['staminaData'] = [
                     'initial_stamina' => (float)($stParsed['initial_stamina'] ?? 0),
                     'start_time' => (int)($stParsed['start_time'] ?? 0),
-                    'used_stamina_total' => (float)$staminaUpdates[$playerIdKey]['used_stamina_total'],
-                    'current_stamina' => array_key_exists('current_stamina', $staminaUpdates[$playerIdKey]) ? $staminaUpdates[$playerIdKey]['current_stamina'] : null,
+                    'used_stamina_total' => (float)$staminaUpdates[$playerStaminaKey]['used_stamina_total'],
+                    'current_stamina' => $staminaUpdates[$playerStaminaKey]['current_stamina'] ?? null,
                 ];
             }
 
@@ -364,15 +373,16 @@ class BattleManagerHelpers
             ];
 
             $monsterIdKey = (string)$monsterId;
-            if (isset($staminaUpdates[$monsterIdKey]) && $staminaUpdates[$monsterIdKey]['type'] === 'monster') {
-                $stRaw = Redis::hget("battle:$battleId:stamina_data", "monster:$monsterIdKey");
+            $monsterStaminaKey = "monster:{$monsterIdKey}";
+            if (isset($staminaUpdates[$monsterStaminaKey])) {
+                $stRaw = Redis::hget("battle:$battleId:stamina_data", $monsterStaminaKey);
                 $stParsed = is_string($stRaw) ? json_decode($stRaw, true) ?? [] : $stRaw;
 
                 $monsterPayload['staminaData'] = [
                     'initial_stamina' => (float)($stParsed['initial_stamina'] ?? 0),
                     'start_time' => (int)($stParsed['start_time'] ?? 0),
-                    'used_stamina_total' => (float)$staminaUpdates[$monsterIdKey]['used_stamina_total'],
-                    'current_stamina' => array_key_exists('current_stamina', $staminaUpdates[$monsterIdKey]) ? $staminaUpdates[$monsterIdKey]['current_stamina'] : null,
+                    'used_stamina_total' => (float)$staminaUpdates[$monsterStaminaKey]['used_stamina_total'],
+                    'current_stamina' => $staminaUpdates[$monsterStaminaKey]['current_stamina'] ?? null,
                 ];
             }
 
@@ -469,6 +479,13 @@ class BattleManagerHelpers
                 continue;
             }
 
+            // --- Log antes de aplicar o item ---
+            Log::channel('battle_debug')->info("[finalizeItemCast][BeforeApplyItem] Target stamina antes do item", [
+                'battle' => $battleId,
+                'target_id' => $targetInstanceId,
+                'stamina_data' => Redis::hget("battle:$battleId:stamina_data", "{$targetType}:$targetInstanceId")
+            ]);
+
             try {
                 $result = $itemService->applyConsumable($caster, $target, $battleId, (int)$itemId, $casterType, $targetType);
             } catch (\Throwable $e) {
@@ -480,8 +497,34 @@ class BattleManagerHelpers
                 continue;
             }
 
+            // --- Log após aplicar o item ---
+            Log::channel('battle_debug')->info("[finalizeItemCast][AfterApplyItem] Result do item", [
+                'battle' => $battleId,
+                'target_id' => $targetInstanceId,
+                'result' => $result
+            ]);
+
             if (array_key_exists('current_stamina', $result) && $result['current_stamina'] !== null) {
                 $casterCurrentStamina = $result['current_stamina'];
+            }
+            // --- Registro de used_stamina_total tanto do caster quanto do target ---
+            foreach (['caster', 'target'] as $role) {
+                $resId = (string)($result["{$role}_id"] ?? '');
+                if ($resId !== '') {
+                    $resType = $role === 'caster' ? $casterType : $targetType;
+                    $staminaKey = "{$resType}:{$resId}"; // <-- nova chave combinada
+                    $staminaUpdates[$staminaKey] = [
+                        'used_stamina_total' => (float)($result['used_stamina_total'] ?? 0),
+                        'current_stamina' => $result['current_stamina'] ?? null,
+                    ];
+
+                    // --- Log detalhado de staminaUpdates ---
+                    Log::channel('battle_debug')->info("[finalizeItemCast][StaminaUpdates] {$role}", [
+                        'battle' => $battleId,
+                        'staminaKey' => $staminaKey,
+                        'staminaUpdate' => $staminaUpdates[$staminaKey]
+                    ]);
+                }
             }
 
             $targetName = $target['name'] ?? ($target['username'] ?? 'Desconhecido');
@@ -542,16 +585,16 @@ class BattleManagerHelpers
                 'currentHp' => (int)($playerStats['current_hp'] ?? 0),
             ];
 
-            $playerIdKey = (string)$playerId;
-            if (isset($staminaUpdates[$playerIdKey]) && $staminaUpdates[$playerIdKey]['type'] === 'character') {
-                $stRaw = Redis::hget("battle:$battleId:stamina_data", "character:$playerIdKey");
+            $playerStaminaKey = "character:{$playerId}";
+            if (isset($staminaUpdates[$playerStaminaKey])) {
+                $stRaw = Redis::hget("battle:$battleId:stamina_data", $playerStaminaKey);
                 $stParsed = is_string($stRaw) ? json_decode($stRaw, true) ?? [] : $stRaw;
 
                 $playerPayload['staminaData'] = [
                     'initial_stamina' => (float)($stParsed['initial_stamina'] ?? 0),
                     'start_time' => (int)($stParsed['start_time'] ?? 0),
-                    'used_stamina_total' => (float)$staminaUpdates[$playerIdKey]['used_stamina_total'],
-                    'current_stamina' => array_key_exists('current_stamina', $staminaUpdates[$playerIdKey]) ? $staminaUpdates[$playerIdKey]['current_stamina'] : null,
+                    'used_stamina_total' => (float)$staminaUpdates[$playerStaminaKey]['used_stamina_total'],
+                    'current_stamina' => $staminaUpdates[$playerStaminaKey]['current_stamina'] ?? null,
                 ];
             }
 
@@ -570,16 +613,16 @@ class BattleManagerHelpers
                 'isAlive' => ($monsterStats['current_hp'] ?? 0) > 0,
             ];
 
-            $monsterIdKey = (string)$monsterId;
-            if (isset($staminaUpdates[$monsterIdKey]) && $staminaUpdates[$monsterIdKey]['type'] === 'monster') {
-                $stRaw = Redis::hget("battle:$battleId:stamina_data", "monster:$monsterIdKey");
+            $monsterStaminaKey = "monster:{$monsterId}";
+            if (isset($staminaUpdates[$monsterStaminaKey])) {
+                $stRaw = Redis::hget("battle:$battleId:stamina_data", $monsterStaminaKey);
                 $stParsed = is_string($stRaw) ? json_decode($stRaw, true) ?? [] : $stRaw;
 
                 $monsterPayload['staminaData'] = [
                     'initial_stamina' => (float)($stParsed['initial_stamina'] ?? 0),
                     'start_time' => (int)($stParsed['start_time'] ?? 0),
-                    'used_stamina_total' => (float)$staminaUpdates[$monsterIdKey]['used_stamina_total'],
-                    'current_stamina' => array_key_exists('current_stamina', $staminaUpdates[$monsterIdKey]) ? $staminaUpdates[$monsterIdKey]['current_stamina'] : null,
+                    'used_stamina_total' => (float)$staminaUpdates[$monsterStaminaKey]['used_stamina_total'],
+                    'current_stamina' => $staminaUpdates[$monsterStaminaKey]['current_stamina'] ?? null,
                 ];
             }
 
