@@ -112,7 +112,21 @@ class BattleManager extends BattleManagerHelpers
             }
             // Fase animation -> finalize
             elseif ($event['phase'] === 'animation') {
-                $someoneDied = $this->finalizeSkillCast($battleId, $event);
+                $someoneDied = false;
+
+                if (isset($event['skill_id']) && $event['skill_id']) {
+                    // É skill
+                    $someoneDied = $this->finalizeSkillCast($battleId, $event);
+                } elseif (isset($event['item_id']) && $event['item_id']) {
+                    // É item
+                    $someoneDied = $this->finalizeItemCast($battleId, $event);
+                } else {
+                    Log::channel('battle_debug')->warning("[processBattlePendingSkills] Evento sem skill_id ou item_id", [
+                        'battle' => $battleId,
+                        'event' => $event
+                    ]);
+                }
+
                 if ($someoneDied) $someoneDiedAny = true;
 
                 // Remove evento da fila

@@ -47,17 +47,10 @@ class BattleActions
 
                 foreach ($targetsList as &$target) {
                     // Lógica de aplicar item ao target
-                    $itemService->applyConsumable($caster, $target, $battleId, $itemId, $casterType, $targetType);
+                    $itemService->startItemCast($caster, $target, $battleId, $itemId, $casterType, $targetType);
                 }
 
-                $characterId = Redis::hget("battle:$battleId:instance_map", $caster['instanceId']);
-                try {
-                    $prepKey = "battle:{$characterId}:character:{$characterId}:consumables";
-                    $itemService->consumeItem($battleId, $caster['instanceId'], (int)$characterId, $itemId, 1, $prepKey);
-                } catch (\Throwable $e) {
-                    Log::error("Falha ao decrementar item após uso", ['err' => $e->getMessage()]);
-                    // decidir rollback behavior: notificar jogador, etc.
-                }
+                
             } else {
                 Log::warning("[executeAction] Nenhum skillId nem itemId fornecido", [
                     'casterId' => $casterId,

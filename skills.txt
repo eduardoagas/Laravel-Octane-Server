@@ -9,7 +9,7 @@
             'post_delay' => 500,
             'level' => 1,
         ],
-        1 => [
+        8 => [
             'id' => 1,
             'name' => 'Fire Ball',
             'type' => 'magical',

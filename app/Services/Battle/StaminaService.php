@@ -163,7 +163,7 @@ class StaminaService
      * Observação: o script Lua deve implementar a mesma lógica analítica (mesmas constantes/bandas)
      * para garantir consistência entre leitura (PHP) e consumo (Lua).
      */
-    public static function consumeStamina(string $battleId, string $id, float $amount, string $type = 'character'): ?float
+    public static function consumeStamina(string $battleId, string $id, float $amount, string $type = 'character'): ?array
     {
         $field = "{$type}:{$id}";
         $key = "battle:$battleId:stamina_data";

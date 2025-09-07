@@ -17,7 +17,7 @@ class OrcBehavior implements MonsterBehaviorInterface
         }
 
         // Escolhe a skill
-        $skillId = rand(1, 100) <= 50 ? 0 : 4; // 0 = Attack, 4 = Wait
+        $skillId = rand(1, 100) <= 50 ? 1 : 4; // 0 = Attack, 4 = Wait
 
         return [
             'skill_id' => $skillId,

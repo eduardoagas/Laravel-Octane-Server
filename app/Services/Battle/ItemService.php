@@ -226,8 +226,9 @@ class ItemService
             'lock_time' => $item['lock_time'] ?? 0,
         ];
 
-        $zsetKey = "battle:{$battleId}:pending_items_zset";
-        $hashKey = "battle:{$battleId}:pending_items_data";
+        // Chaves Redis - servirão tanto pr aitens quanto pra skills
+        $zsetKey = "battle:{$battleId}:pending_skills_zset";   // ZSET com score = ready_at
+        $hashKey = "battle:{$battleId}:pending_skills_data";   // HASH com eventId => JSON
 
         Redis::hset($hashKey, $eventId, json_encode($event));
         Redis::zadd($zsetKey, [$eventId => $event['ready_at']]);
@@ -238,17 +239,19 @@ class ItemService
     private function findConsumableInRedis(string $battleId, string $casterType, string $casterId, int $itemId): ?array
     {
         $redisKey = "battle:{$battleId}:{$casterType}:{$casterId}:consumables";
-        $raw = Redis::get($redisKey);
-        if (!$raw) return null;
+        $rawItems = Redis::hgetall($redisKey);
+        if (!$rawItems) return null;
 
-        $arr = json_decode($raw, true);
-        if (!is_array($arr)) return null;
-
-        foreach ($arr as $c) {
-            if ((int)($c['id'] ?? -1) === $itemId) return $c;
+        foreach ($rawItems as $field => $json) {
+            $item = json_decode($json, true);
+            if (isset($item['id']) && (int)$item['id'] === $itemId) {
+                return $item;
+            }
         }
+
         return null;
     }
+
 
     /**
      * Consome 1 (ou $amount) do consumable item (DB + Redis battle key + Redis preparatory key).

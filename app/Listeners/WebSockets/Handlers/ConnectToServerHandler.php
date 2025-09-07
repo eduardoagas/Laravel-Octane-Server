@@ -149,7 +149,8 @@ class CharacterHelpers
     ];
 
     private static array $defaultSkills = [
-        0 => [
+        1 => [
+            'id' => 1,
             'name' => 'Attack',
             'type' => 'physical',
             'power' => 0,
@@ -158,16 +159,54 @@ class CharacterHelpers
             'post_delay' => 0,
             'level' => 1,
         ],
-        1 => [
-            'name' => 'Fire Ball',
-            'type' => 'magical',
-            'power' => 25,
-            'stamina_cost' => 15,
-            'pre_delay' => 0,
-            'post_delay' => 0,
+        2 => [
+            'id' => 2,
+            'name' => 'Raise Defense',
+            'type' => 'buff',
+            'stat' => 'physical_defense',
+            'bonus' => 5,
+            'duration' => 3,
+            'stamina_cost' => 10,
+            'pre_delay' => 300,
+            'post_delay' => 500,
+            'level' => 1,
+        ],
+        3 => [
+            'id' => 3,
+            'name' => 'Heal',
+            'type' => 'heal',
+            'power' => 20, // quantidade de HP curada
+            'stamina_cost' => 8,
+            'pre_delay' => 400,
+            'post_delay' => 700,
+            'level' => 1,
+        ],
+        4 => [
+            'id' => 4,
+            'name' => 'Wait',
+            'type' => 'buff',
+            'stat' => 'physical_defense_bonus',
+            'bonus' => 0,
+            'duration' => 3,
+            'stamina_cost' => 0,
+            'pre_delay' => 300,
+            'post_delay' => 500,
+            'level' => 1,
+        ],
+        5 => [
+            'id' => 5,
+            'name' => 'Death',
+            'type' => 'debuff',
+            'stat' => 'death',
+            'bonus' => 0,
+            'power' => 20,
+            'stamina_cost' => 10,
+            'pre_delay' => 300,
+            'post_delay' => 500,
             'level' => 1,
         ],
         6 => [
+            'id' => 6,
             'name' => 'PoisonTick',
             'type' => 'percentageDamage',
             'stat' => 'poison',
@@ -180,6 +219,7 @@ class CharacterHelpers
             'tick_skill_flag' => true,
         ],
         7 => [
+            'id' => 7,
             'name' => 'Poison',
             'type' => 'debuff',
             'power' => 0,
@@ -249,7 +289,17 @@ class CharacterHelpers
 
     public function setupSkillsAndSouls(Character $character)
     {
-        foreach (self::$defaultSkills as $id => $skillData) {
+        $skills = collect(self::$defaultSkills);
+
+        // primeiro os que não dependem de outro
+        foreach ($skills->whereNull('tick_skill_id') as $id => $skillData) {
+            $skillData['id'] = $id; // força o ID
+            Skill::firstOrCreate(['id' => $id], $skillData);
+        }
+
+        // depois os que dependem
+        foreach ($skills->whereNotNull('tick_skill_id') as $id => $skillData) {
+            $skillData['id'] = $id; // força o ID
             Skill::firstOrCreate(['id' => $id], $skillData);
         }
 
@@ -270,8 +320,8 @@ class CharacterHelpers
         $equippedGrid = $templateGrid->replicateForCharacter($character);
 
         $initialSoulsData = [
-            ['name' => 'Soul A', 'skills' => [0, 1, 6]],
-            ['name' => 'Soul B', 'skills' => [1, 7]],
+            ['name' => 'Soul A', 'skills' => [1, 2, 3, 7]],
+            ['name' => 'Soul B', 'skills' => [1, 2, 3, 5]],
         ];
 
         $tickSkillsForRedis = [];

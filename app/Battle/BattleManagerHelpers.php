@@ -404,6 +404,133 @@ class BattleManagerHelpers
         return $someoneDied;
     }
 
+    protected function finalizeItemCast(string $battleId, array $event): bool
+    {
+        $itemService = new \App\Services\Battle\ItemService();
+        $globalMessages = [];
+        $allResults = [];
+        $someoneDied = false;
+
+        $casterInstanceId = (string)($event['caster_id'] ?? '');
+        $casterType = $event['caster_type'] ?? 'character';
+        $itemId = $event['item_id'] ?? null;
+        $targetType = $event['target_type'] ?? 'character';
+
+        if ($casterInstanceId === '' || !$itemId || (empty($event['target_id']) && empty($event['targets']))) {
+            Log::channel('battle_debug')->warning("[finalizeItemCast] Evento inválido", ['battle' => $battleId, 'event' => $event]);
+            return false;
+        }
+
+        $loadEntity = function (string $battleId, string $type, string $instanceId): ?array {
+            $key = ($type === 'monster') ? "battle:{$battleId}:monsters" : "battle:{$battleId}:characters_data";
+            $raw = Redis::hget($key, $instanceId);
+            if (!$raw) return null;
+            $decoded = is_string($raw) ? json_decode($raw, true) : $raw;
+            return is_array($decoded) ? $decoded : null;
+        };
+
+        $caster = $loadEntity($battleId, $casterType, $casterInstanceId);
+        if (!$caster) {
+            Log::channel('battle_debug')->warning("[finalizeItemCast] Caster não encontrado", [
+                'battle' => $battleId,
+                'caster_type' => $casterType,
+                'caster_instance' => $casterInstanceId,
+                'event' => $event
+            ]);
+            return false;
+        }
+
+        $targetsList = [];
+        if (!empty($event['target_id'])) {
+            $targetsList[] = (string)$event['target_id'];
+        } elseif (!empty($event['targets']) && is_array($event['targets'])) {
+            foreach ($event['targets'] as $t) {
+                if (is_string($t) || is_int($t)) $targetsList[] = (string)$t;
+                elseif (is_array($t) && isset($t['instanceId'])) $targetsList[] = (string)$t['instanceId'];
+            }
+        }
+
+        if (empty($targetsList)) {
+            Log::channel('battle_debug')->warning("[finalizeItemCast] Targets vazios ou inválidos", [
+                'battle' => $battleId,
+                'event' => $event
+            ]);
+            return false;
+        }
+
+        $staminaUpdates = [];
+        $casterCurrentStamina = null;
+
+        foreach ($targetsList as $targetInstanceId) {
+            $target = $loadEntity($battleId, $targetType, $targetInstanceId);
+            if (!$target) {
+                $globalMessages[] = "Alvo {$targetInstanceId} não encontrado (pode ter sido removido).";
+                continue;
+            }
+
+            try {
+                $result = $itemService->applyConsumable($caster, $target, $battleId, (int)$itemId, $casterType, $targetType);
+            } catch (\Throwable $e) {
+                Log::error("[finalizeItemCast] Erro ao aplicar item", [
+                    'battle' => $battleId,
+                    'exception' => $e,
+                    'event' => $event
+                ]);
+                continue;
+            }
+
+            if (array_key_exists('current_stamina', $result) && $result['current_stamina'] !== null) {
+                $casterCurrentStamina = $result['current_stamina'];
+            }
+
+            $allResults[] = [
+                'actionInfoUse' => "{$casterType} {$casterInstanceId} usou item {$itemId}",
+                'actionInfoResult' => json_encode($result)
+            ];
+
+            if (!empty($result['someoneDied'] ?? false)) {
+                $targetName = $target['name'] ?? 'Desconhecido';
+                $globalMessages[] = "$targetName morreu!";
+                $someoneDied = true;
+            }
+        }
+
+        // --- Broadcast simplificado (similar finalizeSkillCast) ---
+        $this->notifyBattle($battleId, 'item_result', [
+            'players' => Redis::hgetall("battle:$battleId:characters_data"),
+            'enemies' => Redis::hgetall("battle:$battleId:monsters"),
+            'actionInfoUse' => implode(' | ', array_column($allResults, 'actionInfoUse')),
+            'actionInfoResult' => implode(' | ', array_column($allResults, 'actionInfoResult')),
+            'globalMessages' => $globalMessages,
+        ]);
+
+        if ($casterCurrentStamina !== null) {
+            Log::channel('battle_debug')->info("[finalizeItemCast] Stamina atual do caster", [
+                'instanceId' => $caster['instanceId'] ?? '',
+                'current_stamina' => $casterCurrentStamina
+            ]);
+        }
+
+        // Limpa flags de execução
+        if ($casterType === 'character') {
+            Redis::del("battle:$battleId:skill_in_execution:{$casterInstanceId}");
+            Redis::hdel("battle:$battleId:pending_items_data", $casterInstanceId);
+            $characterId = Redis::hget("battle:$battleId:instance_map", $caster['instanceId']);
+            try {
+                $prepKey = "battle:{$characterId}:character:{$characterId}:consumables";
+                $itemService->consumeItem($battleId, $caster['instanceId'], (int)$characterId, $itemId, 1, $prepKey);
+            } catch (\Throwable $e) {
+                Log::error("Falha ao decrementar item após uso", ['err' => $e->getMessage()]);
+                // decidir rollback behavior: notificar jogador, etc.
+            }
+        } elseif ($casterType === 'monster') {
+            $caster['isCasting'] = false;
+            Redis::hset("battle:$battleId:monsters", $casterInstanceId, json_encode($caster));
+        }
+
+        return $someoneDied;
+    }
+
 
 
 
