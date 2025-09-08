@@ -464,12 +464,14 @@ class BattleWithMonsterHandler
                         'soulSlotIndex' => $preferredSlot,
                     ]
                 ],
-                'monsters' => [
+                'enemies' => [
                     [
                         'instanceId' => (string)$monsterInstanceId,
+                        'nstatus' => '',
+                        'isAlive' => true,
                         'monster_id' => $monster->id,
-                        'name' => $monster->name,
-                        'stats' => $monsterStats,
+                        //'name' => $monster->name,
+                        //'stats' => $monsterStats,
                     ]
                 ],
                 'general' => ['globalMessages' => ["Battle's started!"]],
