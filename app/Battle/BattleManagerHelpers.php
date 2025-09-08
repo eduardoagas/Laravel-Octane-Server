@@ -100,12 +100,13 @@ class BattleManagerHelpers
         $actionInfoResult = '';
         $floatingText = $context['floatingText'] ?? []; // <-- novo: array opcional de floating entries
 
-        // Pega nome da skill se houver
-        $skillName = null;
+        // Pega nome da skill ou item se houver
+        $actionName = null;
+
         if (!empty($context['skill_id'])) {
             $skillService = new \App\Services\Battle\SkillService();
             try {
-                $skillName = $skillService->getSkillName(
+                $actionName = $skillService->getSkillName(
                     (int)$context['skill_id'],
                     $battleId,
                     $context['caster_type'] ?? null,
@@ -117,19 +118,41 @@ class BattleManagerHelpers
                     'skill_id' => $context['skill_id'],
                     'err' => $e->getMessage()
                 ]);
-                $skillName = null;
+                $actionName = null;
+            }
+        } elseif (!empty($context['item_id'])) {
+            $itemService = new \App\Services\Battle\ItemService();
+            try {
+                $actionName = $itemService->getItemName(
+                    (int)$context['item_id'],
+                    $battleId,
+                    $context['caster_type'] ?? null,
+                    $context['caster_id'] ?? null
+                );
+            } catch (\Throwable $e) {
+                Log::channel('battle_debug')->warning("[notifyBattle] Falha ao obter nome do item", [
+                    'battleId' => $battleId,
+                    'item_id' => $context['item_id'],
+                    'err' => $e->getMessage()
+                ]);
+                $actionName = null;
             }
         }
 
         switch ($stage) {
             case 'pre_delay':
-                $actionInfoUse = "{$context['caster_type']} {$context['caster_id']} começou a conjurar skill {$skillName}";
-                $globalMessages[] = "Skill {$skillName} em preparação";
+                $actionInfoUse = "{$context['caster_type']} {$context['caster_id']} começou a conjurar ação {$actionName}";
+                $globalMessages[] = "{$actionName} em preparação";
                 break;
 
             case 'animation':
-                $actionInfoUse = "{$context['caster_type']} {$context['caster_id']} está animando skill {$skillName}";
-                $globalMessages[] = "Skill {$skillName} entrou na fase de animação";
+                $actionInfoUse = "{$context['caster_type']} {$context['caster_id']} está animando ação {$actionName}";
+                $globalMessages[] = "{$actionName} entrou na fase de animação";
+                $floatingText[] = [
+                    'casterType'        => $context['caster_type'] ?? null,
+                    'casterInstanceId'  => $context['caster_id'] ?? null,
+                    'actionName'        => $actionName ?? 'Skill desconhecida',
+                ];
                 break;
 
             case 'result':
