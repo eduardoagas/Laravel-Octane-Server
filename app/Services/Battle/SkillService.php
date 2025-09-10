@@ -181,7 +181,7 @@ class SkillService
             };
             $power = $this->calculateDamage($damage, $strength);
         } elseif (($skill['type'] ?? '') === 'buff') {
-            $power = $skill['power'] ?? 0; //bonus fallback, não existe mais bonus na tabela
+            $power = $skill['power'] ?? 0;
         } elseif (($skill['type'] ?? '') === 'heal') {
             $power = ($skill['power'] ?? 0) + ($casterStats['intelligence'] ?? 0);
         } else {
@@ -500,22 +500,28 @@ class SkillService
         $buffsKey   = "battle:{$battleId}:{$casterType}:{$casterId}:buffs";
         $debuffsKey = "battle:{$battleId}:{$casterType}:{$casterId}:debuffs";
 
-        // função interna para processar hash JSON
+        // copia os stats originais para não mexer no base
+        $effective = $stats;
+
         $applyEffects = function (string $hashKey, array &$statsArr) {
             $entries = Redis::hgetall($hashKey);
-            foreach ($entries as $field => $json) {
+            foreach ($entries as $json) {
                 $data = json_decode($json, true);
                 if (!isset($data['stat'], $data['power'])) continue;
+
                 $statName = $data['stat'];
                 $bonus    = (int)($data['power'] ?? 0);
+
+                // aplica sobre o snapshot (não persiste em lugar nenhum)
                 $statsArr[$statName] = ($statsArr[$statName] ?? 0) + $bonus;
             }
         };
 
-        $applyEffects($buffsKey, $stats);
-        $applyEffects($debuffsKey, $stats);
+        $applyEffects($buffsKey, $effective);
+        $applyEffects($debuffsKey, $effective);
 
-        return $stats;
+        // retorna o snapshot final, que pode ser serializado em JSON e enviado
+        return $effective;
     }
 
     /**

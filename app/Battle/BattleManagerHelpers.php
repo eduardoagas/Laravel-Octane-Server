@@ -287,7 +287,7 @@ class BattleManagerHelpers
         return [
             'name' => $buff['name'] ?? ($buff['id'] ?? null),
             'stat' => $buff['stat'] ?? null,
-            'power' => $buff['power'] ?? ($buff['bonus'] ?? null),
+            'power' => $buff['power'] ?? null,
             'duration' => $buff['duration'] ?? null,
         ];
     }
@@ -499,7 +499,7 @@ class BattleManagerHelpers
                 $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu cura de {$result['healed_amount']}";
             } elseif (isset($result['buff_applied'])) {
                 $buff = $result['buff_applied'];
-                $buffValue = $buff['bonus'] ?? ($buff['power'] ?? 0);
+                $buffValue = $buff['power'] ?? 0;
                 $buffDuration = $buff['duration'] ?? '∞';
                 $buffStat = $buff['stat'] ?? 'unknown';
                 $actionInfoResult = "Buff aplicado: +{$buffValue} {$buffStat} por {$buffDuration} turnos";
@@ -668,7 +668,7 @@ class BattleManagerHelpers
                 $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu cura de {$result['healed_amount']}";
             } elseif (isset($result['buff_applied'])) {
                 $buff = $result['buff_applied'];
-                $buffValue = $buff['bonus'] ?? ($buff['power'] ?? 0);
+                $buffValue = $buff['bonus'] ?? 0;
                 $buffDuration = $buff['duration'] ?? '∞';
                 $buffStat = $buff['stat'] ?? 'unknown';
                 $actionInfoResult = "Buff aplicado: +{$buffValue} {$buffStat} por {$buffDuration} turnos";
