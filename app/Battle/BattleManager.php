@@ -994,7 +994,7 @@ class BattleManager extends BattleManagerHelpers
 
                         $playersPayload[] = [
                             'instanceId'    => (string) $pData['instanceId'],
-                            'soulSlotIndex' => isset($pData['soulSlotIndex']) ? (int)$pData['soulSlotIndex'] : -1,
+                            'soulSlotIndex' => $slotIndex,
 
                         ];
                     }
