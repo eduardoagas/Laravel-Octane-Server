@@ -29,27 +29,46 @@ class SoulChangeInExecutionHandler implements HandlesUnityEvent
     {
         $session = Redis::hgetall("session:$token");
         $battleId = $session['battle_instance_id'] ?? null;
-        $characterId = $session['character_id'] ?? null;
+        $characterId = isset($session['character_id']) ? (int)$session['character_id'] : null; // DB id
+
+        if (!$battleId || !$characterId) {
+            Log::warning("[SoulChangeInExecutionHandler] battleId or characterId missing in session", compact('battleId', 'characterId'));
+            return;
+        }
+
+        // 1) Mapear characterId (DB) -> instanceId (chave usada na batalha)
+        $playerInstanceId = null;
+        $playersHash = Redis::hgetall("battle:$battleId:characters_data");
+        foreach ($playersHash as $instanceKey => $json) {
+            $decoded = @json_decode($json, true);
+            if (is_array($decoded) && isset($decoded['id']) && (int)$decoded['id'] === $characterId) {
+                $playerInstanceId = (string)$instanceKey;
+                break;
+            }
+        }
+
+        Log::info("[SoulChangeInExecutionHandler] Mapped characterId {$characterId} -> instanceId {$playerInstanceId} (battle {$battleId})");
+
 
         if (!$battleId || !$characterId) return;
 
-        $pendingCacheKey = "battle:$battleId:pending_soul_change_cache:$characterId";
+        $pendingCacheKey = "battle:$battleId:pending_soul_change_cache:$playerInstanceId";
         $actionJson = Redis::get($pendingCacheKey);
 
         if (!$actionJson) {
             Log::warning("SoulChangeInExecution recebido sem ação cacheada", [
                 'battleId' => $battleId,
-                'characterId' => $characterId
+                'playerInstanceId' => $playerInstanceId
             ]);
             return;
         }
 
         // Empilha na key de pending_soul_changes
         $pendingChangesKey = "battle:$battleId:pending_soul_changes";
-        Redis::hset($pendingChangesKey, (string)$characterId, $actionJson);
+        Redis::hset($pendingChangesKey, (string)$playerInstanceId, $actionJson);
 
         // Marca que está em execução (para bloquear novas tentativas)
-        $executionKey = "battle:$battleId:soul_change_in_execution:$characterId";
+        $executionKey = "battle:$battleId:soul_change_in_execution:$playerInstanceId";
         Redis::setex($executionKey, self::SOUL_CHANGE_LOCK_TTL, time());
 
         // Remove cache temporário
@@ -57,7 +76,7 @@ class SoulChangeInExecutionHandler implements HandlesUnityEvent
 
         Log::info("SoulChangeInExecution: ação movida para pending_soul_changes", [
             'battleId' => $battleId,
-            'characterId' => $characterId,
+            'playerInstanceId' => $playerInstanceId,
             'action' => json_decode($actionJson, true)
         ]);
     }

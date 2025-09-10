@@ -59,12 +59,6 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'stats'   => json_encode($character->stats ? $character->stats->toArray() : [], JSON_UNESCAPED_UNICODE),
         ]);
 
-        // --- Atualiza stats + soul grid via handler ---
-        (new CharacterSyncHandler())->handle($character->id, $connection);
-
-        // --- Atualiza battlepack via handler ---
-        (new BattlePackUpdateHandler())->handle($character->id, $connection);
-
         // --- Agora podemos montar o payload 'subscribeMe' para Unity ---
         $characterPayload = [
             'id'    => $character->id,
@@ -88,6 +82,8 @@ class ConnectToServerHandler implements HandlesUnityEvent
         $connection->send(json_encode($payloadToSend, JSON_UNESCAPED_UNICODE));
 
         Log::info("Conexão inicial completa: subscribeMe enviado", ['character_id' => $character->id]);
+
+        
     }
 
     private function createCharacter(int $userId): Character

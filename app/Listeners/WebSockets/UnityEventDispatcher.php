@@ -19,6 +19,7 @@ class UnityEventDispatcher
             'shoot' => \App\Listeners\WebSockets\Handlers\ShootHandler::class,
             'client-shootRequest' => \App\Listeners\WebSockets\Handlers\ShootShotHandler::class,
             'connect_to_server' => \App\Listeners\WebSockets\Handlers\ConnectToServerHandler::class,
+            'sync_me_server' => \App\Listeners\WebSockets\Handlers\SyncMeServerHandler::class,
             'battle_with_monster' => \App\Listeners\WebSockets\Handlers\BattleWithMonsterHandler::class,
             'can_use_skill' => \App\Listeners\WebSockets\Handlers\CanUseSkillHandler::class,
             'can_use_item' => \App\Listeners\WebSockets\Handlers\CanUseItemHandler::class,
