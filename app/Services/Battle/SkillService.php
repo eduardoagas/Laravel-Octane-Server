@@ -181,7 +181,7 @@ class SkillService
             };
             $power = $this->calculateDamage($damage, $strength);
         } elseif (($skill['type'] ?? '') === 'buff') {
-            $power = $skill['power'] ?? 0;
+            $power = $skill['power'] ?? $skill['bonus'] ?? 0; //bonus fallback, não existe mais bonus na tabela
         } elseif (($skill['type'] ?? '') === 'heal') {
             $power = ($skill['power'] ?? 0) + ($casterStats['intelligence'] ?? 0);
         } else {

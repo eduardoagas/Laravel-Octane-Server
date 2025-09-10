@@ -263,7 +263,7 @@ class BattleWithMonsterHandler
                 'level' => 1,
                 'strength' => 12,
                 'intelligence' => 6,
-                'defense_bonus' => 5,
+                'physical_defense' => 5,
                 'dexterity' => 1,
                 'stamina' => 25,
             ]);
