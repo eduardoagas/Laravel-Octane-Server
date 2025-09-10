@@ -19,7 +19,6 @@
 -- 13 = max_stacks
 -- 14 = stack_behavior ("add"|"refresh"|"replace")
 -- 15 = lock_time (em milissegundos, opcional)
-
 local targetKey = KEYS[1]
 local skillType = ARGV[1] or ""
 local casterId = ARGV[2] or ""
@@ -73,10 +72,10 @@ local function apply_effects(hashKey, statsTable)
     for i = 1, #entries, 2 do
         local buffData = cjson.decode(entries[i + 1])
         local statName = buffData["stat"]
-        local bonus = tonumber(buffData["bonus"] or 0)
-        if statName and bonus ~= 0 then
+        local power = tonumber(buffData["power"] or 0)
+        if statName and power ~= 0 then
             local current = tonumber(statsTable[statName] or 0)
-            statsTable[statName] = current + bonus
+            statsTable[statName] = current + power
         end
     end
 end
@@ -96,8 +95,8 @@ local function nano_random()
     end
     local seed = secs * 1000000 + ((micros + inc) % 1000000)
     math.randomseed(seed)
-math.random();
-math.random()
+    math.random();
+    math.random()
 
     return math.random()
 end
@@ -206,16 +205,16 @@ local function apply_debuff(casterId, casterType, targetId, stat, power, duratio
     end
 
     local stat_chance = caster_luk / (caster_luk + target_vit)
-local base_chances = {
-    weak = 0.10,
-    medium = 0.20,
-    strong = 0.50
-}
-local min_chances = {
-    weak = 0.00,
-    medium = 0.01,
-    strong = 0.10
-}
+    local base_chances = {
+        weak = 0.10,
+        medium = 0.20,
+        strong = 0.50
+    }
+    local min_chances = {
+        weak = 0.00,
+        medium = 0.01,
+        strong = 0.10
+    }
 
     local chance = base_chances[debuff_strength] * stat_chance
     chance = math.max(min_chances[debuff_strength], math.min(0.99, chance))
@@ -319,21 +318,21 @@ local function apply_buff(casterId, casterType, targetId, stat, power, duration)
             local oldStacks = tonumber(old["stacks"] or 1)
             if stackBehavior == "add" then
                 old["stacks"] = math.min(maxStacks, oldStacks + 1)
-                old["bonus"] = (old["bonus"] or 0) + math.floor(power)
+                old["power"] = (old["power"] or 0) + math.floor(power)
                 old["duration"] = duration
                 old["applied_at"] = redis.call("TIME")[1]
             elseif stackBehavior == "refresh" then
                 old["duration"] = duration
                 old["applied_at"] = redis.call("TIME")[1]
-                if math.floor(power) > (old["bonus"] or 0) then
-                    old["bonus"] = math.floor(power)
+                if math.floor(power) > (old["power"] or 0) then
+                    old["power"] = math.floor(power)
                 end
             elseif stackBehavior == "replace" then
                 old = {
                     caster_id = casterId,
                     caster_type = casterType,
                     stat = stat,
-                    bonus = math.floor(power),
+                    power = math.floor(power),
                     duration = duration,
                     applied_at = redis.call("TIME")[1],
                     tick_skill_id = tickSkillId,
@@ -344,7 +343,7 @@ local function apply_buff(casterId, casterType, targetId, stat, power, duration)
                 }
             else
                 old["stacks"] = math.min(maxStacks, oldStacks + 1)
-                old["bonus"] = (old["bonus"] or 0) + math.floor(power)
+                old["power"] = (old["power"] or 0) + math.floor(power)
                 old["duration"] = duration
                 old["applied_at"] = redis.call("TIME")[1]
             end
@@ -354,8 +353,8 @@ local function apply_buff(casterId, casterType, targetId, stat, power, duration)
         else
             old["duration"] = duration
             old["applied_at"] = redis.call("TIME")[1]
-            if math.floor(power) > (old["bonus"] or 0) then
-                old["bonus"] = math.floor(power)
+            if math.floor(power) > (old["power"] or 0) then
+                old["power"] = math.floor(power)
             end
             redis.call("HSET", buffsHashKey, field, cjson.encode(old))
             result["buff_applied"] = old
@@ -365,7 +364,7 @@ local function apply_buff(casterId, casterType, targetId, stat, power, duration)
             caster_id = casterId,
             caster_type = casterType,
             stat = stat ~= "" and stat or "unknown",
-            bonus = math.floor(power),
+            power = math.floor(power),
             duration = duration and math.floor(duration) or nil,
             applied_at = redis.call("TIME")[1],
             tick_skill_id = tickSkillId,
@@ -420,7 +419,7 @@ elseif skillType == "heal" then
     local maxHp = tonumber(stats["hp"] or 100)
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
     if currentHpShadow > 0 then
-         local healPower = math.max(0, math.floor(power))
+        local healPower = math.max(0, math.floor(power))
         -- calcula o novo HP sem ultrapassar o máximo
         local effectiveHeal = math.min(healPower, maxHp - currentHpShadow)
         if effectiveHeal > 0 then
