@@ -33,7 +33,8 @@ local tickInterval = tonumber(ARGV[10]) or nil
 local battleId = ARGV[11] or ""
 local stackableFlag = (ARGV[12] == "1") and true or false
 local maxStacks = tonumber(ARGV[13]) or 1
-local stackBehavior = ARGV[14] or "add"
+local stackBehavior = ARGV[14] or "refresh"
+
 local lockTime = tonumber(ARGV[15]) or 0
 
 local t_start = redis.call("TIME")
@@ -55,7 +56,16 @@ if not raw then
 end
 
 local entity = cjson.decode(raw)
-local stats = entity["stats"] or {}
+
+local function shallow_copy(tbl)
+    local copy = {}
+    for k, v in pairs(tbl) do
+        copy[k] = v
+    end
+    return copy
+end
+
+local stats = shallow_copy(entity["stats"] or {})
 
 local someoneDied = false
 local result = {}
@@ -425,7 +435,8 @@ elseif skillType == "heal" then
         if effectiveHeal > 0 then
             local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, effectiveHeal)
             stats["current_hp"] = newHp
-            result["healed_amount"] = effectiveHeal
+result["healed_amount"] = healPower
+
         else
             result["healed_amount"] = 0
         end
@@ -480,15 +491,22 @@ if lockTime > 0 then
     end
 end
 
--- persist updated entity back to the provided targetKey (NO FALLBACK)
-entity["stats"] = stats
+-- só atualiza HP e stamina no entity, nunca mexe nos outros stats base
+if stats["current_hp"] ~= nil then
+    entity["stats"]["current_hp"] = stats["current_hp"]
+end
+
+if stats["stamina"] ~= nil then
+    entity["stats"]["current_stamina"] = stats["current_stamina"]
+end
+
 redis.call("HSET", targetKey, targetId, cjson.encode(entity))
 
 result["target_died"] = someoneDied
 result["current_hp"] = math.floor(stats["current_hp"] or 0)
 -- garante que current_stamina esteja presente sempre (se não definido, tenta ler do stats)
-if result["current_stamina"] == nil then
-    result["current_stamina"] = tonumber(stats["stamina"] or 0)
+if stats["current_stamina"] ~= nil then
+    entity["stats"]["current_stamina"] = math.floor(stats["current_stamina"])
 end
 
 local t2 = redis.call("TIME")

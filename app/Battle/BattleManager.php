@@ -709,7 +709,13 @@ class BattleManager extends BattleManagerHelpers
                     $targetRef = $targetJson ? json_decode($targetJson, true) : null;
 
 
-                    $monster['isCasting'] = true; // impede múltiplas execuções simultâneas
+
+                    $monsterJson = Redis::hget("battle:$battleId:monsters", $monsterKey);
+                    $monster = $monsterJson ? json_decode($monsterJson, true) : [];
+
+                    // só altera o que interessa
+                    $monster['isCasting'] = true;
+
                     Redis::hset("battle:$battleId:monsters", $monsterKey, json_encode($monster));
                     $battleActions->executeAction($monster, $skillId, null, $targetRef, $battleId, 'monster', $t['category']);
 

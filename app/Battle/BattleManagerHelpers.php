@@ -563,6 +563,8 @@ class BattleManagerHelpers
             Redis::del("battle:{$battleId}:skill_in_execution:{$casterInstanceId}");
             Redis::hdel("battle:{$battleId}:pending_actions", $casterInstanceId);
         } elseif ($casterType === 'monster') {
+            $monsterJson = Redis::hget("battle:$battleId:monsters", $casterInstanceId);
+            $caster = $monsterJson ? json_decode($monsterJson, true) : [];
             $caster['isCasting'] = false;
             Redis::hset("battle:{$battleId}:monsters", $casterInstanceId, json_encode($caster));
         }
@@ -740,6 +742,8 @@ class BattleManagerHelpers
                 // decidir rollback behavior: notificar jogador, etc.
             }
         } elseif ($casterType === 'monster') {
+            $monsterJson = Redis::hget("battle:$battleId:monsters", $casterInstanceId);
+            $caster = $monsterJson ? json_decode($monsterJson, true) : [];
             $caster['isCasting'] = false;
             Redis::hset("battle:{$battleId}:monsters", $casterInstanceId, json_encode($caster));
         }
