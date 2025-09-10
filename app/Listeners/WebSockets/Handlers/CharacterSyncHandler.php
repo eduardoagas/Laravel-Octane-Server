@@ -80,7 +80,7 @@ class CharacterSyncHandler
             'channel' => "character.{$characterId}",
             'data' => [
                 'stats' => $stats,
-                'equipped_soul_grid' => $soulsArray,
+                'equippedSoulGrid' => $soulsArray,
 
             ]
         ];

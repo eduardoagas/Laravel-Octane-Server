@@ -48,6 +48,9 @@ class SubscribeConfirmedHandler implements HandlesUnityEvent
             // Normaliza o campo stats: pode ser JSON string, "Array", já-array, etc.
             $characterData['stats'] = $this->normalizeStatsValue($characterData['stats'] ?? null);
 
+            //$normalizedStats = $this->normalizeStatsValue($stats);
+            //$normalizedSoulsArray = $this->normalizeStatsValue($soulsArray);
+
             // Monta payload para enviar — stats já está como array/obj
             $out = [
                 'event' => 'character_connected',
