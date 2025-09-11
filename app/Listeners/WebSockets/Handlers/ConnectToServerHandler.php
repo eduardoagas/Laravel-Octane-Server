@@ -100,10 +100,10 @@ class ConnectToServerHandler implements HandlesUnityEvent
             $character->stats()->create([
                 'level'          => 1,
                 'strength'       => 10,
-                'intelligence'   => 5,
-                'dexterity'      => 7,
+                'intelligence'   => 10,
+                'dexterity'      => 300, //7
                 'vitality'        => 5,
-                'wisdom' => 2,
+                'wisdom' => 300, //2
             ]);
 
             // --- Inventários ---
@@ -386,16 +386,32 @@ class CharacterHelpers
 
         // primeiro os que não dependem de outro
         foreach ($skills->whereNull('tick_skill_id') as $id => $skillData) {
+            $addEffects = $skillData['add_effects'] ?? [];
+            unset($skillData['add_effects']); // não existe essa coluna na tabela
+
             $skillData['id'] = $id; // força o ID
-            Skill::firstOrCreate(['id' => $id], $skillData);
+            $skill = Skill::firstOrCreate(['id' => $id], $skillData);
+
+            // salva add_effects vinculados
+            foreach ($addEffects as $effect) {
+                $skill->addEffects()->firstOrCreate($effect);
+            }
         }
 
-        // depois os que dependem
+        // depois os que dependem (tem tick_skill_id)
         foreach ($skills->whereNotNull('tick_skill_id') as $id => $skillData) {
+            $addEffects = $skillData['add_effects'] ?? [];
+            unset($skillData['add_effects']);
+
             $skillData['id'] = $id; // força o ID
-            Skill::firstOrCreate(['id' => $id], $skillData);
+            $skill = Skill::firstOrCreate(['id' => $id], $skillData);
+
+            foreach ($addEffects as $effect) {
+                $skill->addEffects()->firstOrCreate($effect);
+            }
         }
 
+        // soul grid base
         $templateGrid = SoulGrid::where('name', 'Starter Grid')->first();
         if (!$templateGrid) {
             $templateGrid = SoulGrid::create(['name' => 'Starter Grid', 'slots_count' => 4]);
@@ -467,6 +483,7 @@ class CharacterHelpers
         $tickSkillsKey = "battle:{$characterId}:character:{$characterId}:tick_skills";
         Redis::set($tickSkillsKey, json_encode(array_values($tickSkillsForRedis), JSON_UNESCAPED_UNICODE));
     }
+
 
     /**
      * Normaliza um valor de "stats" que você pode ter vindo do Redis/Outro handler:

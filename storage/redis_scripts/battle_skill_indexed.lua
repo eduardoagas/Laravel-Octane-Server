@@ -269,6 +269,20 @@ local function apply_debuff(casterId, casterType, targetId, stat, power, duratio
     }
 
     local chance = base_chances[debuff_strength] * stat_chance
+
+    -- 🔹 Ajuste pelas resistências (valores entre 0 e 100)
+    local resistance_value = tonumber(stats["nstatus_resistance"]) or 0 -- resistência genérica
+
+    -- resistência específica do tipo de debuff (ex: poison, burn, etc.)
+    local resistance_key = stat .. "_resistance"
+    resistance_value = resistance_value + (tonumber(stats[resistance_key]) or 0)
+
+    -- limite máximo de 100
+    resistance_value = math.min(resistance_value, 100)
+
+    -- subtrai proporcionalmente ao valor da resistência
+    chance = chance * (1 - resistance_value / 100)
+
     chance = math.max(min_chances[debuff_strength], math.min(0.99, chance))
 
     local roll = nano_random()
@@ -472,7 +486,7 @@ if skillType == "physical" or skillType == "magical" then
     local elemental_potency = get_element_potency(casterStats, element)
     local elemental_resistance = get_element_resistance(stats, element)
 
-     -- aplica potency primeiro
+    -- aplica potency primeiro
     damage = math.max(0, (damage * (1 + elemental_potency / 100)))
 
     -- aplica defesa
@@ -493,8 +507,9 @@ if skillType == "physical" or skillType == "magical" then
 
     damage = math.floor(damage)
     -- garante que não fique negativo
-    if damage < 0 then damage = 0 end
-
+    if damage < 0 then
+        damage = 0
+    end
 
     local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, -damage)
     stats["current_hp"] = newHp
@@ -505,10 +520,8 @@ if skillType == "physical" or skillType == "magical" then
 
     apply_debuff(casterId, casterType, targetId, stat, power, duration, level)
 
-elseif skillType == "physicalPercentageDamage" 
-    or skillType == "physicalPurePercentageDamage"
-    or skillType == "magicalPercentageDamage"
-    or skillType == "magicalPurePercentageDamage" then
+elseif skillType == "physicalPercentageDamage" or skillType == "physicalPurePercentageDamage" or skillType ==
+    "magicalPercentageDamage" or skillType == "magicalPurePercentageDamage" then
 
     local maxHp = tonumber(stats["hp"] or 100)
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
@@ -552,9 +565,7 @@ elseif skillType == "physicalPercentageDamage"
 
     apply_debuff(casterId, casterType, targetId, stat, power, duration, level)
 
-
-
--- === Skill/Item handling ===
+    -- === Skill/Item handling ===
 elseif skillType == "heal" then
     local maxHp = tonumber(stats["hp"] or 100)
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
@@ -594,7 +605,7 @@ elseif skillType == "revive" then
         end
         result["healed_amount"] = healPower
     end
-    
+
 elseif skillType == "buff" then
     apply_buff(casterId, casterType, targetId, stat, power, duration)
 
