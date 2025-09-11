@@ -435,10 +435,11 @@ elseif skillType == "heal" then
         if effectiveHeal > 0 then
             local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, effectiveHeal)
             stats["current_hp"] = newHp
-result["healed_amount"] = healPower
+            result["healed_amount"] = healPower
 
         else
-            result["healed_amount"] = 0
+            result["healed_amount"] = healPower
+
         end
     end
 
@@ -458,10 +459,12 @@ elseif skillType == "revive" then
         if effectiveHeal > 0 then
             local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, effectiveHeal)
             stats["current_hp"] = newHp
-            result["healed_amount"] = effectiveHeal
+            result["healed_amount"] = healRevive
+
             result["revive_applied"] = true
         else
-            result["healed_amount"] = 0
+            result["healed_amount"] = healRevive
+
         end
     end
 
