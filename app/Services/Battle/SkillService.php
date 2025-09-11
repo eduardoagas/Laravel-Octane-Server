@@ -179,7 +179,12 @@ class SkillService
         } elseif (($skill['type'] ?? '') === 'buff') {
             $power = $skill['power'] ?? 0;
         } elseif (($skill['type'] ?? '') === 'heal') {
-            $power = ($skill['power'] ?? 0) + ($casterStats['intelligence'] ?? 0);
+           $power = $this->calculateDamage(
+                $skill['power'] ?? 0,
+                $casterStats,
+                'magical',
+                $skill['level'] ?? 1
+            );
         } else {
             // fallback neutro
             $power = $skill['power'] ?? 0;

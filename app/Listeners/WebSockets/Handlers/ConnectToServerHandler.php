@@ -172,7 +172,7 @@ class CharacterHelpers
             'add_effects' => [
                 [
                     'stat' => 'physical_damage_resistance',
-                    'value' => 10
+                    'value' => 100
                 ],
             ],
         ],
@@ -180,7 +180,7 @@ class CharacterHelpers
             'id' => 3,
             'name' => 'Heal',
             'type' => 'heal',
-            'power' => 20, // quantidade de HP curada
+            'power' => 10,
             'stamina_cost' => 25,
             'pre_delay' => 0,
             'post_delay' => 0,

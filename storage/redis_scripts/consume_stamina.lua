@@ -50,7 +50,7 @@ local function main()
   local used = tonumber(parsed['used_stamina_total'] or 0)
 
   -- constants (MANTER idênticas ao PHP)
-  local minRate = 2.60
+  local minRate = 3.60
   local maxRate = 20.0
   local maxDex = 300.0
   local alpha = 0.3
