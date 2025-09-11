@@ -117,6 +117,10 @@ class BattleWithMonsterHandler
                             'tick_interval' => $skill->tick_interval ?? null,
                             'tick_skill_id' => $skill->tick_skill_id ?? null,
                             'tick_skill_flag' => $skill->tick_skill_flag ?? false,
+                            'add_effects' => $skill->addEffects->map(fn($effect) => [
+                                'stat' => $effect->stat,
+                                'value' => $effect->value,
+                            ])->toArray(),
                         ];
 
                         // Identifica tick skills:

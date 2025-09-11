@@ -170,15 +170,6 @@ class SkillService
 
         // cálculo de power dependendo do type
         if (($skill['type'] ?? '') === 'physical' || ($skill['type'] ?? '') === 'magical') {
-            $attackAttribute = ($skill['type'] === 'physical') ? 'strength' : 'intelligence';
-            $baseAttack = $casterStats[$attackAttribute] ?? 0;
-            $damage = ($skill['power'] ?? 0) + $baseAttack;
-            $strength = match (($skill['level'] ?? 1)) {
-                1 => 'weak',
-                2 => 'medium',
-                3 => 'strong',
-                default => 'medium',
-            };
             $power = $this->calculateDamage(
                 $skill['power'] ?? 0,
                 $casterStats,
@@ -549,6 +540,13 @@ class SkillService
 
                 // aplica sobre o snapshot (não persiste em lugar nenhum)
                 $statsArr[$statName] = ($statsArr[$statName] ?? 0) + $bonus;
+            }
+
+            // 🔹 Lida com resistances extras se existirem
+            if (!empty($data['add_effects']) && is_array($data['add_effects'])) {
+                foreach ($data['add_effects'] as $effect => $value) {
+                    $statsArr[$effect] = ($statsArr[$effect] ?? 0) + (float)$value;
+                }
             }
         };
 

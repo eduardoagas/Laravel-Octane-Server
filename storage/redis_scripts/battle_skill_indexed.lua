@@ -156,7 +156,7 @@ local function get_damage_defense(stats_table, skillType, casterEntity)
     local pierce_pct = random_pierce(min_pct, max_pct, 4) -- bias=4
     pierce_pct = tonumber(string.format("%.2f", pierce_pct))
 
-    local reduced_defense = math.floor(defense * (1 - pierce_pct / 100))
+    local reduced_defense = defense * (1 - pierce_pct / 100)
     if reduced_defense < 0 then
         reduced_defense = 0
     end
@@ -170,7 +170,6 @@ local function get_damage_defense(stats_table, skillType, casterEntity)
 
     return reduced_defense
 end
-
 
 -- helper: update atômico de HP (usando targetKey como base)
 local function apply_hp_delta(targetKey, battleId, targetId, stats, delta)
@@ -432,14 +431,70 @@ local function apply_buff(casterId, casterType, targetId, stat, power, duration)
     end
 end
 
+-- === Funções auxiliares para elementos ===
+local function get_element_potency(statsTable, element)
+    if element == "neutral" then
+        return tonumber(statsTable["non_elemental_potency"] or 0)
+    elseif element == "poison" then
+        return tonumber(statsTable["poison_element_potency"] or 0)
+    else
+        return tonumber(statsTable[element .. "_potency"] or 0)
+    end
+end
+
+local function get_element_resistance(statsTable, element)
+    if element == "neutral" then
+        return tonumber(statsTable["non_elemental_resistance"] or 0)
+    elseif element == "poison" then
+        return tonumber(statsTable["poison_element_resistance"] or 0)
+    else
+        return tonumber(statsTable[element .. "_resistance"] or 0)
+    end
+end
+
+-- helper para calcular heal com potências
+local function calc_effective_heal(power, casterStats, targetStats)
+    local healingPotency = tonumber(casterStats["healing_potency"] or 0)
+    local recoverPotency = tonumber(targetStats["recover_potency"] or 0)
+    local heal = power * (1 + healingPotency / 100) * (1 + recoverPotency / 100)
+    return math.max(0, math.floor(heal))
+end
+
 -- === Skill/Item handling ===
 -- Note: 'skillType' covers both skill types and item effect types.
 if skillType == "physical" or skillType == "magical" then
-local casterEntity = findCasterExplicit(casterId, casterType)
-local defense = get_damage_defense(stats, skillType, casterEntity)
-
+    local casterEntity = findCasterExplicit(casterId, casterType)
+    local casterStats = casterEntity and casterEntity["stats"] or {}
+    local element = casterEntity and casterEntity["element"] or "neutral" -- opcional: pode vir da skill
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
-    local damage = math.max(0, math.floor(power) - math.floor(defense))
+    local damage = math.max(0, power)
+
+    local elemental_potency = get_element_potency(casterStats, element)
+    local elemental_resistance = get_element_resistance(stats, element)
+
+     -- aplica potency primeiro
+    damage = math.max(0, (damage * (1 + elemental_potency / 100)))
+
+    -- aplica defesa
+    local defense = get_damage_defense(stats, skillType, casterEntity)
+    damage = math.max(0, damage - defense)
+
+    -- aplica resistance (negativa aumenta dano)
+    if elemental_resistance ~= 0 then
+        damage = damage * (1 - elemental_resistance / 100)
+    end
+
+    -- aplica resistência final (positiva reduz, negativa aumenta)
+    local resistanceStat = skillType == "physical" and "physical_damage_resistance" or "magical_damage_resistance"
+    local resistance = tonumber(stats[resistanceStat] or 0) -- esperado em porcentagem (ex: 20 ou -30)
+    if resistance ~= 0 then
+        damage = damage * (1 - resistance / 100)
+    end
+
+    damage = math.floor(damage)
+    -- garante que não fique negativo
+    if damage < 0 then damage = 0 end
+
 
     local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, -damage)
     stats["current_hp"] = newHp
@@ -450,16 +505,43 @@ local defense = get_damage_defense(stats, skillType, casterEntity)
 
     apply_debuff(casterId, casterType, targetId, stat, power, duration, level)
 
-elseif skillType == "percentageDamage" or skillType == "purePercentageDamage" then
+elseif skillType == "physicalPercentageDamage" 
+    or skillType == "physicalPurePercentageDamage"
+    or skillType == "magicalPercentageDamage"
+    or skillType == "magicalPurePercentageDamage" then
+
     local maxHp = tonumber(stats["hp"] or 100)
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
     local damage = 0
-    if skillType == "percentageDamage" then
-        damage = math.floor(currentHpShadow * (power / 100))
-    else
-        damage = math.floor(maxHp * (power / 100))
+
+    if skillType == "physicalPercentageDamage" or skillType == "magicalPercentageDamage" then
+        damage = currentHpShadow * (power / 100)
+    else -- pure
+        damage = maxHp * (power / 100)
     end
-    damage = math.max(0, damage)
+
+    -- pega caster explicitamente
+    local casterEntity = findCasterExplicit(casterId, casterType)
+    local casterStats = casterEntity and casterEntity["stats"] or {}
+    local element = casterEntity and casterEntity["element"] or "neutral"
+    local elemental_potency = get_element_potency(casterStats, element)
+
+    -- elemental resistance
+    local elemental_resistance = get_element_resistance(stats, element)
+    local effective_elemental_resistance = math.max(0, elemental_resistance - elemental_potency)
+    if effective_elemental_resistance ~= 0 then
+        damage = damage * (1 - effective_elemental_resistance / 100)
+    end
+
+    -- resistência final: física ou mágica
+    local resistanceStat = (skillType:find("physical") and "physical_damage_resistance") or "magical_damage_resistance"
+    local resistance = tonumber(stats[resistanceStat] or 0)
+    local effective_resistance = math.max(0, resistance - elemental_potency)
+    if effective_resistance ~= 0 then
+        damage = damage * (1 - effective_resistance / 100)
+    end
+
+    damage = math.floor(math.max(0, damage))
 
     local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, -damage)
     stats["current_hp"] = newHp
@@ -470,22 +552,23 @@ elseif skillType == "percentageDamage" or skillType == "purePercentageDamage" th
 
     apply_debuff(casterId, casterType, targetId, stat, power, duration, level)
 
-elseif skillType == "heal" then
+
+
+-- === Skill/Item handling ===
+if skillType == "heal" then
     local maxHp = tonumber(stats["hp"] or 100)
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
     if currentHpShadow > 0 then
-        local healPower = math.max(0, math.floor(power))
-        -- calcula o novo HP sem ultrapassar o máximo
+        local casterEntity = findCasterExplicit(casterId, casterType)
+        local casterStats = casterEntity and casterEntity["stats"] or {}
+        local healPower = calc_effective_heal(power, casterStats, stats)
+
         local effectiveHeal = math.min(healPower, maxHp - currentHpShadow)
         if effectiveHeal > 0 then
             local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, effectiveHeal)
             stats["current_hp"] = newHp
-            result["healed_amount"] = healPower
-
-        else
-            result["healed_amount"] = healPower
-
         end
+        result["healed_amount"] = healPower
     end
 
 elseif skillType == "stamina" then
@@ -498,20 +581,20 @@ elseif skillType == "stamina" then
 elseif skillType == "revive" then
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
     if currentHpShadow == 0 then
-        local healRevive = math.floor(power)
-        -- calcula o novo HP sem ultrapassar o máximo
-        local effectiveHeal = math.min(healRevive, maxHp - currentHpShadow)
+        local maxHp = tonumber(stats["hp"] or 100)
+        local casterEntity = findCasterExplicit(casterId, casterType)
+        local casterStats = casterEntity and casterEntity["stats"] or {}
+        local healPower = calc_effective_heal(power, casterStats, stats)
+
+        local effectiveHeal = math.min(healPower, maxHp - currentHpShadow)
         if effectiveHeal > 0 then
             local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, effectiveHeal)
             stats["current_hp"] = newHp
-            result["healed_amount"] = healRevive
-
             result["revive_applied"] = true
-        else
-            result["healed_amount"] = healRevive
-
         end
+        result["healed_amount"] = healPower
     end
+end
 
 elseif skillType == "buff" then
     apply_buff(casterId, casterType, targetId, stat, power, duration)

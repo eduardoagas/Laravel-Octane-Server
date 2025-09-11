@@ -169,6 +169,12 @@ class CharacterHelpers
             'pre_delay' => 0,
             'post_delay' => 0,
             'level' => 1,
+            'add_effects' => [
+                [
+                    'stat' => 'physical_damage_resistance',
+                    'value' => 10
+                ],
+            ],
         ],
         3 => [
             'id' => 3,
@@ -204,9 +210,9 @@ class CharacterHelpers
         ],
         6 => [
             'id' => 6,
-            'name' => 'PoisonTick',
-            'type' => 'percentageDamage',
-            'power' => 10,
+            'name' => 'Poison Tick',
+            'type' => 'physicalPurePercentageDamage',
+            'power' => 6.25,
             'duration' => 1,
             'stamina_cost' => 0,
             'pre_delay' => 0,
@@ -433,6 +439,10 @@ class CharacterHelpers
                 'tick_interval' => $skill->tick_interval ?? null,
                 'tick_skill_id' => $skill->tick_skill_id ?? null,
                 'tick_skill_flag' => $skill->tick_skill_flag ?? false,
+                'add_effects' => $skill->addEffects->map(fn($effect) => [
+                    'stat' => $effect->stat,
+                    'value' => $effect->value,
+                ])->toArray(),
             ])->toArray();
 
             foreach ($skillsArray as $skill) {

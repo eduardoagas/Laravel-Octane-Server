@@ -10,6 +10,7 @@ class Skill extends Model
         'id',
         'name',
         'type',
+        'element',
         'power',
         'stamina_cost',
         'pre_delay',
@@ -20,21 +21,25 @@ class Skill extends Model
         'tick_interval',
         'tick_skill_id',
         'tick_skill_flag',
-        'stackable',       // novo
-        'max_stacks',      // novo
-        'stack_behavior',  // novo
+        'stackable',
+        'max_stacks',
+        'stack_behavior',
         'lock_time',
         'animation_time',
     ];
 
     public function souls()
     {
-        return $this->belongsToMany(Soul::class, 'soul_skill')
-            ->withTimestamps();
+        return $this->belongsToMany(Soul::class, 'soul_skill')->withTimestamps();
     }
 
     public function tickSkill()
     {
         return $this->belongsTo(Skill::class, 'tick_skill_id');
+    }
+
+    public function addEffects()
+    {
+        return $this->hasMany(SkillAddEffect::class);
     }
 }
