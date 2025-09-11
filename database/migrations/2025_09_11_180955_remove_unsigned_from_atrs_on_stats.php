@@ -10,8 +10,8 @@ return new class extends Migration
     {
         Schema::table('stats', function (Blueprint $table) {
             // Altera as colunas para INTEGER (signed) mantendo o tamanho original
-            $table->integer('physical_defense')->change();
-            $table->integer('magical_defense')->change();
+            $table->integer('physical_defense')->default(0)->change();
+            $table->integer('magical_defense')->default(0)->change();
         });
     }
 
@@ -19,8 +19,8 @@ return new class extends Migration
     {
         Schema::table('stats', function (Blueprint $table) {
             // Volta para unsigned
-            $table->unsignedInteger('physical_defense')->change();
-            $table->unsignedInteger('magical_defense')->change();
+            $table->unsignedInteger('physical_defense')->default(0)->change();
+            $table->unsignedInteger('magical_defense')->default(0)->change();
         });
     }
 };

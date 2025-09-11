@@ -555,7 +555,7 @@ elseif skillType == "physicalPercentageDamage"
 
 
 -- === Skill/Item handling ===
-if skillType == "heal" then
+elseif skillType == "heal" then
     local maxHp = tonumber(stats["hp"] or 100)
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
     if currentHpShadow > 0 then
@@ -594,8 +594,7 @@ elseif skillType == "revive" then
         end
         result["healed_amount"] = healPower
     end
-end
-
+    
 elseif skillType == "buff" then
     apply_buff(casterId, casterType, targetId, stat, power, duration)
 

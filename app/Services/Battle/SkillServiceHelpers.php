@@ -42,7 +42,7 @@ class SkillServiceHelpers extends SkillService
     private function sustainableAttackRateFromDex(int $dex, ?int $staminaCost = null, float $minAtkRate = 0.5, float $maxAtkRate = 2.0): float
     {
         // constants from consume_stamina.lua
-        $minRate = 2.35;
+        $minRate = 2.60;
         $maxRate = 20.0;
         $maxDex = 300.0;
         $alpha = 0.3;

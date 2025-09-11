@@ -153,7 +153,7 @@ class CharacterHelpers
             'name' => 'Attack',
             'type' => 'physical',
             'power' => 10, //preset a = 10/30/60
-            'stamina_cost' => 15, //preset a = 25/50/140
+            'stamina_cost' => 25, //preset a = 25/50/140
             'pre_delay' => 0,
             'post_delay' => 0,
             'level' => 1,
@@ -181,7 +181,7 @@ class CharacterHelpers
             'name' => 'Heal',
             'type' => 'heal',
             'power' => 20, // quantidade de HP curada
-            'stamina_cost' => 8,
+            'stamina_cost' => 25,
             'pre_delay' => 0,
             'post_delay' => 0,
             'level' => 1,
@@ -227,7 +227,7 @@ class CharacterHelpers
             'stat' => 'poison',
             'power' => 0,
             'duration' => null,
-            'stamina_cost' => 15,
+            'stamina_cost' => 25,
             'pre_delay' => 0,
             'post_delay' => 0,
             'level' => 3,
@@ -241,7 +241,7 @@ class CharacterHelpers
      */
     public function calculateStamina(int $level, int $wisdom): int
     {
-        return ($level * 21) + ((1 + $wisdom) * 7);
+        return (int) (25 + ($level * 1.2) + ((1 + $wisdom) * 2));
     }
 
     /**
