@@ -82,9 +82,9 @@ class ConnectToServerHandler implements HandlesUnityEvent
         $connection->send(json_encode($payloadToSend, JSON_UNESCAPED_UNICODE));
 
         Log::info("Conexão inicial completa: subscribeMe enviado", ['character_id' => $character->id]);
-
-        
     }
+
+
 
     private function createCharacter(int $userId): Character
     {
@@ -98,14 +98,12 @@ class ConnectToServerHandler implements HandlesUnityEvent
 
             // --- Stats iniciais ---
             $character->stats()->create([
-                'hp'             => 1000,
                 'level'          => 1,
                 'strength'       => 10,
                 'intelligence'   => 5,
-                'phyiscal_defense'  => 8,
-                'magical_defense' => 8,
                 'dexterity'      => 7,
-                'stamina'        => 12,
+                'vitality'        => 5,
+                'wisdom' => 2,
             ]);
 
             // --- Inventários ---
@@ -115,8 +113,13 @@ class ConnectToServerHandler implements HandlesUnityEvent
             $battlePack = $character->battlePack()->create(['max_slots' => 4]);
 
             // --- Helpers ---
-            (new CharacterHelpers())->setupConsumables($consumablesInventory, $battlePack, $character);
-            (new CharacterHelpers())->setupSkillsAndSouls($character);
+            $helpers = new CharacterHelpers();
+            $helpers->setupConsumables($consumablesInventory, $battlePack, $character);
+            $helpers->setupSkillsAndSouls($character);
+
+            // --- Aplica stats derivados de Vitality ---
+            $helpers->applyVitStatsToCharacter($character);
+            $helpers->applyWisdomStatsToCharacter($character);
             return $character;
         });
     }
@@ -149,8 +152,8 @@ class CharacterHelpers
             'id' => 1,
             'name' => 'Attack',
             'type' => 'physical',
-            'power' => 0,
-            'stamina_cost' => 15,
+            'power' => 10, //preset a = 10/30/60
+            'stamina_cost' => 15, //preset a = 25/50/140
             'pre_delay' => 0,
             'post_delay' => 0,
             'level' => 1,
@@ -226,6 +229,96 @@ class CharacterHelpers
             'tick_interval' => 5,
         ]
     ];
+
+    /**
+     * Calcula stamina a partir do level e wisdom
+     */
+    public function calculateStamina(int $level, int $wisdom): int
+    {
+        return ($level * 21) + ((1 + $wisdom) * 7);
+    }
+
+    /**
+     * Aplica a stamina baseada em wisdom no personagem
+     */
+    public function applyWisdomStatsToCharacter(Character $character): void
+    {
+        $stats = $character->stats;
+
+        if (!$stats) {
+            Log::warning("Personagem {$character->id} não possui stats definidos.");
+            return;
+        }
+
+        $stats->stamina = $this->calculateStamina($stats->level, $stats->wisdom);
+        $stats->save();
+
+        // Atualiza Redis
+        $characterId = $character->id;
+        $key = "character_session:{$characterId}";
+        Redis::hmset($key, [
+            'stats' => json_encode($stats->toArray(), JSON_UNESCAPED_UNICODE),
+        ]);
+
+        Log::info("Stamina derivada de WIS aplicada ao personagem {$characterId}", [
+            'level' => $stats->level,
+            'wisdom' => $stats->wisdom,
+            'stamina' => $stats->stamina,
+        ]);
+    }
+
+
+    private function calculateDefenseFromVit(int $level, int $vit, int $intelligence = 0): array
+    {
+        // Coeficientes calibrados (sincronizar com Lua)
+        $A = 3.703913650809579;
+        $B = 2.6906470089863075;
+        $DEF_base = 5.0;
+        $k_def = 1.0;
+        $MDEF_base = 2.0;
+
+        $vit = max(2, $vit);
+        $HPMax = 50 + ($A * $vit + $B * pow($vit, 1.5)) + ($level * 15);
+        $DEF   = $DEF_base + $k_def * $vit;
+        $MDEF  = $MDEF_base + 0.5 * $k_def * $vit + 0.5 * $intelligence;
+
+        return [
+            'hp' => (float)$HPMax,
+            'physical_defense'    => (float)$DEF,
+            'magical_defense'   => (float)$MDEF,
+        ];
+    }
+
+    public function applyVitStatsToCharacter(Character $character): void
+    {
+
+
+        $stats = $character->stats;
+
+        if (!$stats) {
+            Log::warning("Personagem {$character->id} não possui stats definidos.");
+            return;
+        }
+
+        // Calcula stats derivados de Vitality
+        $derived = $this->calculateDefenseFromVit($stats->level, $stats->vitality, $stats->intelligence);
+
+        // Atualiza stats do personagem
+        $stats->hp = (int) round($derived['hp']);
+        $stats->physical_defense = (int) round($derived['physical_defense']);
+        $stats->magical_defense = (int) round($derived['magical_defense']);
+        $stats->save();
+
+        // Atualiza Redis
+        $characterId = $character->id;
+        $key = "character_session:{$characterId}";
+        Redis::hmset($key, [
+            'stats' => json_encode($stats->toArray(), JSON_UNESCAPED_UNICODE),
+        ]);
+
+        Log::info("Stats derivados de VIT aplicados ao personagem {$characterId}", $derived);
+    }
+
 
     public function setupConsumables($inventory, $battlePack, Character $character)
     {

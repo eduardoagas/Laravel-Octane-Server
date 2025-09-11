@@ -1,0 +1,9 @@
+agiFactor = (min(dex/300,1)) ^ 0.3
+baseRegen = 2.35 + (20.0 - 2.35) * agiFactor
+sustainable_rate = baseRegen / stamina_cost
+mapped_rate = 0.5 + 1.5 * agiFactor
+rate_time = 1.0 / (pre + anim + post + lock)
+final_rate = min(mapped_rate, sustainable_rate, rate_time)
+dps_sustained = damage_per_hit * final_rate
+
+

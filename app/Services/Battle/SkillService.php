@@ -179,7 +179,12 @@ class SkillService
                 3 => 'strong',
                 default => 'medium',
             };
-            $power = $this->calculateDamage($damage, $strength);
+            $power = $this->calculateDamage(
+                $skill['power'] ?? 0,
+                $casterStats,
+                $skill['type'] ?? 'physical',
+                $skill['level'] ?? 1
+            );
         } elseif (($skill['type'] ?? '') === 'buff') {
             $power = $skill['power'] ?? 0;
         } elseif (($skill['type'] ?? '') === 'heal') {
@@ -418,17 +423,47 @@ class SkillService
 
 
 
-    private function calculateDamage(float $power, string $strength = 'weak'): float
+    /**
+     * Calcula damage per hit (power) --- NÃO usa DEX.
+     *
+     * Parâmetros calibrados que reproduzem a última tabela:
+     *  - exponent = 0.45
+     *  - dmgBoost = 1.25
+     *
+     * signature preservada: calculateDamage($skillPower, $casterStats, $skillType, $skillLevel)
+     */
+    private function calculateDamage(float $skillPower, array $casterStats, string $skillType = 'physical', int $skillLevel = 1): float
     {
-        $base = 10 + 1 * $power; // Multiplicadores sugeridos
+        // parâmetros calibrados (ajuste se quiser)
+        $dmgBoost = 1.25;    // boost geral (mantido das últimas tabelas)
+        $exponent = 0.45;    // expoente que controla escala por STR/INT
+
+        // skill multipliers (mantive valores razoáveis)
         $multipliers = [
             'weak' => 0.9,
-            'medium' => 3.0,
-            'strong' => 5.0,
+            'medium' => 1.0,
+            'strong' => 1.6,
         ];
-        $mult = $multipliers[$strength] ?? 0.9;
-        return $base * $mult;
+        $strengthMapping = [1 => 'weak', 2 => 'medium', 3 => 'strong'];
+
+        // atributo principal (STR para físico, INT para mágico)
+        $mainAttr = ($skillType === 'physical') ? 'strength' : 'intelligence';
+        $attrValue = (float)($casterStats[$mainAttr] ?? 0.0);
+
+        // base
+        $base = $skillPower + $attrValue;
+        $strength = $strengthMapping[$skillLevel] ?? 'medium';
+        $mult = $multipliers[$strength] ?? 1.0;
+
+        // escala exponencial suave (sem DEX)
+        // attrScale = (1.02 ^ attr) ^ exponent
+        $attrScale = pow(pow(1.03, 1 + $attrValue), $exponent);
+
+        $damage = $base * $mult * $attrScale * $dmgBoost;
+
+        return round($damage, 6);
     }
+
 
     /**
      * Helper: busca a skill no Redis para um caster específico.
