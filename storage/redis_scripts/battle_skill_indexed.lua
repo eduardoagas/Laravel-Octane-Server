@@ -129,6 +129,49 @@ local function get_defense(stats_table, skillType)
     end
 end
 
+-- calcula defesa efetiva para dano (com natural_pierce aplicado)
+local function get_damage_defense(stats_table, skillType, casterEntity)
+    local defense = get_defense(stats_table, skillType)
+    local casterStats = casterEntity and casterEntity["stats"] or {}
+    local caster_luk = math.max(1, tonumber(read_stat(casterStats, "luck")) or 0)
+
+    -- funções auxiliares
+    local function calc_pierce_range(luk)
+        local base = 1 + (luk - 1) * (30 - 1) / (300 - 1)
+        local max_pct = 30
+        local min_pct = base
+        if luk >= 300 then
+            min_pct = 28 -- não fixa, mas funil no topo
+        end
+        return min_pct, max_pct
+    end
+
+    local function random_pierce(min_pct, max_pct, bias)
+        local r = nano_random() -- usa nosso RNG com seed
+        local curved = r ^ bias
+        return min_pct + (max_pct - min_pct) * curved
+    end
+
+    local min_pct, max_pct = calc_pierce_range(caster_luk)
+    local pierce_pct = random_pierce(min_pct, max_pct, 4) -- bias=4
+    pierce_pct = tonumber(string.format("%.2f", pierce_pct))
+
+    local reduced_defense = math.floor(defense * (1 - pierce_pct / 100))
+    if reduced_defense < 0 then
+        reduced_defense = 0
+    end
+
+    -- log para debug
+    result["natural_pierce"] = {
+        applied = true,
+        pierce_pct = pierce_pct,
+        caster_luk = caster_luk
+    }
+
+    return reduced_defense
+end
+
+
 -- helper: update atômico de HP (usando targetKey como base)
 local function apply_hp_delta(targetKey, battleId, targetId, stats, delta)
     local hpKey = targetKey .. ":" .. tostring(targetId) .. ":hp"
@@ -392,7 +435,9 @@ end
 -- === Skill/Item handling ===
 -- Note: 'skillType' covers both skill types and item effect types.
 if skillType == "physical" or skillType == "magical" then
-    local defense = get_defense(stats, skillType)
+local casterEntity = findCasterExplicit(casterId, casterType)
+local defense = get_damage_defense(stats, skillType, casterEntity)
+
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
     local damage = math.max(0, math.floor(power) - math.floor(defense))
 
