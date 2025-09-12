@@ -1,6 +1,5 @@
--- consume_stamina_continuous.lua
+-- consume_stamina_optimized.lua
 -- Analítico, compatível Redis Lua 5.1, sem goto, top-level pcall seguro
--- Estratégia contínua para regeneração de stamina (elimina loop por bandas)
 
 local function safe_encode(tbl)
   local ok, encoded = pcall(cjson.encode, tbl)
@@ -37,20 +36,41 @@ local function main()
 
   -- constantes
   local minRate, maxRate, maxDex, alpha = 3.6, 20.0, 300.0, 0.3
+  local absBands = {
+    {0,50,0.4},{50,150,0.8},{150,350,1.2},{350,700,1.8},{700,1e30,3.0}
+  }
 
-  -- cálculo regeneração contínua
+  -- cálculo regeneração
   local elapsed = math.max(0, nowTs - start_time)
   local agiFactor = math.pow(math.min(dex / maxDex, 1.0), alpha)
   local baseRegen = minRate + (maxRate - minRate) * agiFactor
 
   local cur = math.max(0, initial - used)
+  local remaining, recovered = elapsed, 0.0
 
-  -- aproximação contínua das bandas: mult varia linearmente de 0.4 a 3.0
-  local fraction = math.min(cur / sMax, 1.0)
-  local mult = 0.4 + fraction * (3.0 - 0.4)
-  local recovered = elapsed * baseRegen * mult
+  for i=1,#absBands do
+    if remaining <= 0 or cur >= sMax then break end
+    local b = absBands[i]
+    local bTo, mult = math.min(b[2], sMax), b[3]
+    if cur < bTo then
+      local rate = baseRegen * mult
+      local need = bTo - cur
+      local timeToFill = need / rate
+      if timeToFill <= remaining then
+        cur = cur + need
+        recovered = recovered + need
+        remaining = remaining - timeToFill
+      else
+        local gain = rate * remaining
+        cur = cur + gain
+        recovered = recovered + gain
+        remaining = 0
+        break
+      end
+    end
+  end
 
-  local current = math.min(sMax, cur + recovered)
+  local current = math.max(0, math.min(sMax, initial + recovered - used))
 
   -- RECUPERAÇÃO (amount < 0)
   if amount < 0 then

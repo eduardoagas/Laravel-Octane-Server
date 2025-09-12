@@ -25,25 +25,23 @@ class StaminaService
 
     /**
      * Calcula a stamina atual considerando tempo decorrido e regeneração
-     * Usando a lógica contínua do Lua consume_stamina_continuous.lua
      */
     public static function getCurrentStamina(string $battleId, string $id, string $type = 'character'): float
     {
         $key = "battle:$battleId:stamina_data";
         $field = "{$type}:{$id}";
         $data = Redis::hget($key, $field);
+
         if (!$data) return 0.0;
 
         $parsed = json_decode($data, true);
-
         $startTime = (int) ($parsed['start_time'] ?? 0);
         $initial = (float) ($parsed['initial_stamina'] ?? 0.0);
         $sMax = (float) ($parsed['max_stamina'] ?? 0.0);
-        $dex = max(1.0, (float) ($parsed['dexterity'] ?? 1.0));
+        $dex = max(1.0, (float) ($parsed['dexterity'] ?? 0.0));
         $used = (float) ($parsed['used_stamina_total'] ?? 0.0);
 
-        $nowTs = now()->timestamp;
-        $elapsed = max(0.0, $nowTs - $startTime);
+        $elapsed = max(0.0, now()->timestamp - $startTime);
 
         // ---------- constantes ----------
         $minRate = 3.6;
@@ -51,20 +49,45 @@ class StaminaService
         $maxDex = 300.0;
         $alpha = 0.3;
 
+        $absBands = [
+            [0.0, 50.0, 0.4],
+            [50.0, 150.0, 0.8],
+            [150.0, 350.0, 1.2],
+            [350.0, 700.0, 1.8],
+            [700.0, PHP_FLOAT_MAX, 3.0],
+        ];
+
         $agiFactor = pow(min($dex / $maxDex, 1.0), $alpha);
         $baseRegen = $minRate + ($maxRate - $minRate) * $agiFactor;
 
-        // stamina atual antes do consumo
         $current = max(0.0, $initial - $used);
+        $remaining = $elapsed;
+        $recovered = 0.0;
 
-        // multiplicador contínuo linear (0.4 a 3.0)
-        $fraction = min($current / $sMax, 1.0);
-        $mult = 0.4 + $fraction * (3.0 - 0.4);
-        $recovered = $elapsed * $baseRegen * $mult;
+        foreach ($absBands as [$from, $to, $mult]) {
+            if ($remaining <= 0.0 || $current >= $sMax) break;
 
-        $current = min($sMax, $current + $recovered);
+            $bandMax = min($to, $sMax);
+            if ($current >= $bandMax) continue;
 
-        return $current;
+            $need = $bandMax - $current;
+            $rate = $baseRegen * $mult;
+            $timeToFill = $need / $rate;
+
+            if ($timeToFill <= $remaining) {
+                $recovered += $need;
+                $current += $need;
+                $remaining -= $timeToFill;
+            } else {
+                $gain = $rate * $remaining;
+                $recovered += $gain;
+                $current += $gain;
+                break;
+            }
+        }
+
+        $stamina = max(0.0, min($sMax, $initial + $recovered - $used));
+        return $stamina;
     }
 
     /**
@@ -88,7 +111,7 @@ class StaminaService
             if (!$raw) return null;
 
             $decoded = json_decode($raw, true);
-            if (!$decoded || (isset($decoded['error']) && $decoded['error'] === 'insufficient')) {
+            if (!$decoded || isset($decoded['error']) && $decoded['error'] === 'insufficient') {
                 return null;
             }
 
