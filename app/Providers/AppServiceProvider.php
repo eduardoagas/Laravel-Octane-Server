@@ -34,10 +34,10 @@ class AppServiceProvider extends ServiceProvider
                     \Illuminate\Support\Facades\Log::info("[BattleUsersTicker] Processed actions for battle $battleId");
                 }
             }
-        }, 0.1);
+        }, 0.2);
 
         // === Processa ações/comportamentos de monstros a cada 3 segundos ===
-        /*Octane::tick('battle-monsters-ticker', function () use ($battleManager) {
+        Octane::tick('battle-monsters-ticker', function () use ($battleManager) {
             $battleIds = $battleManager->getActiveBattles();
             foreach ($battleIds as $battleId) {
                 $processed = $battleManager->processBattleMonsters($battleId);
@@ -45,7 +45,7 @@ class AppServiceProvider extends ServiceProvider
                     \Illuminate\Support\Facades\Log::info("[BattleMonstersTicker] Processed monsters for battle $battleId");
                 }
             }
-        }, 0.3);*/
+        }, 0.6);
 
         // === Processa buffs e debuffs, ticks de 1 segundo ===
         Octane::tick('battle-effects-ticker', function () use ($battleManager) {
