@@ -7,108 +7,173 @@ use Illuminate\Support\Facades\Redis;
 
 class StaminaService
 {
-    private static ?string $staminaLogicScriptSha = null;
+    // Cache do script Lua para chamadas estáticas
+    private static ?string $consumeLuaScript = null;
 
-    /**
-     * Cria e armazena os dados iniciais de stamina no Redis.
-     *
-     * @param string $battleId
-     * @param string $id
-     * @param float $maxStamina
-     * @param float $dexterity
-     * @param string $type
-     * @return bool
-     */
-    public static function createStaminaData(string $battleId, string $id, float $maxStamina, float $dexterity, string $type = 'character'): array
+    public function initializeStamina(int $now, float $maxStamina, float $agility): array
     {
-
-        $initialData = [
-            'start_time' => now()->timestamp,
+        return [
+            'start_time' => $now,
             'initial_stamina' => 0,
             'max_stamina' => $maxStamina,
-            'dexterity' => $dexterity,
+            'dexterity' => $agility,
             'used_stamina_total' => 0,
         ];
-
-
-        return $initialData;
     }
 
-    /**
-     * Aplica uma alteração de stamina usando o script Lua.
-     *
-     * @param string $battleId
-     * @param string $id
-     * @param float $amount
-     * @param string $type
-     * @return array|null
-     */
-    public static function applyStaminaChange(string $battleId, string $id, int $amount, string $type = 'character'): ?array
+    public static function getCurrentStamina(string $battleId, string $id, string $type = 'character'): float
+    {
+        $field = "{$type}:{$id}";
+        $key = "battle:$battleId:stamina_data";
+        $data = Redis::hget($key, $field);
+
+        Log::info("📥 [getCurrentStamina] Buscando stamina", [
+            'redis_key' => $key,
+            'field' => $field,
+            'raw_data' => $data,
+        ]);
+
+        if (!$data) {
+            Log::warning("⚠️ Nenhum dado de stamina encontrado", [
+                'battleId' => $battleId,
+                'field' => $field
+            ]);
+            return 0.0;
+        }
+
+        $parsed = json_decode($data, true);
+
+        $startTime = (int) ($parsed['start_time'] ?? 0);
+        $initial = (float) ($parsed['initial_stamina'] ?? 0.0);
+        $sMax = (float) ($parsed['max_stamina'] ?? 0.0);
+        $dex = max(1.0, (float) ($parsed['dexterity'] ?? 0.0));
+        $used = (float) ($parsed['used_stamina_total'] ?? 0.0);
+
+        $elapsed = now()->timestamp - $startTime;
+
+        Log::info("📊 [getCurrentStamina] Dados extraídos:", compact('startTime', 'initial', 'sMax', 'dex', 'elapsed', 'used'));
+
+        // ---------- constantes ----------
+        $minRate = 3.60;
+        $maxRate = 20.0;
+        $maxDex = 300.0;
+        $alpha   = 0.3;
+
+        $absBands = [
+            [0.0, 50.0, 0.4],
+            [50.0, 150.0, 0.8],
+            [150.0, 350.0, 1.2],
+            [350.0, 700.0, 1.8],
+            [700.0, PHP_FLOAT_MAX, 3.0],
+        ];
+
+        $agiFactor = pow(min($dex / $maxDex, 1.0), $alpha);
+        $baseRegen = $minRate + ($maxRate - $minRate) * $agiFactor;
+
+        $remaining = max(0.0, (float)$elapsed);
+        $currentSim = max(0.0, $initial - $used);
+        $recovered = 0.0;
+
+        foreach ($absBands as $band) {
+            if ($remaining <= 0.0 || $currentSim >= $sMax) break;
+
+            [$bFrom, $bTo, $mult] = $band;
+            $bTo = min($bTo, $sMax);
+            if ($currentSim >= $bTo) continue;
+
+            $target = $bTo;
+            $rate = $baseRegen * $mult;
+            if ($rate <= 0.0) break;
+
+            $need = $target - $currentSim;
+            $timeToFill = $need / $rate;
+
+            if ($timeToFill <= $remaining) {
+                $recovered += $need;
+                $currentSim += $need;
+                $remaining -= $timeToFill;
+            } else {
+                $gain = $rate * $remaining;
+                $recovered += $gain;
+                $currentSim += $gain;
+                $remaining = 0.0;
+                break;
+            }
+        }
+
+        if (($initial + $recovered - $used) > $sMax) {
+            $recovered -= (($initial + $recovered - $used) - $sMax);
+        }
+
+        $stamina = max(0.0, min($sMax, $initial + $recovered - $used));
+
+        Log::info("✅ [getCurrentStamina] Resultado calculado:", [
+            'stamina_calculada' => $stamina,
+            'stamina_limitada' => $stamina,
+            'initial_stamina' => $initial,
+            'recovered' => $recovered,
+            'used_stamina_total' => $used,
+            'elapsed_seconds' => $elapsed,
+        ]);
+
+        return $stamina;
+    }
+
+    public static function consumeStamina(string $battleId, string $id, float $amount, string $type = 'character'): ?array
     {
         $field = "{$type}:{$id}";
         $key = "battle:$battleId:stamina_data";
 
-        if (self::$staminaLogicScriptSha === null) {
-            $luaPath = storage_path("redis_scripts/stamina_logic.lua");
+        if (self::$consumeLuaScript === null) {
+            $luaPath = storage_path("redis_scripts/consume_stamina.lua");
             if (!file_exists($luaPath)) {
-                Log::error("[StaminaService] Lua script não encontrado em: $luaPath");
+                Log::error("[consumeStamina] Lua script não encontrado em: $luaPath");
                 return null;
             }
-            $script = file_get_contents($luaPath);
-            self::$staminaLogicScriptSha = Redis::script('load', $script);
+            self::$consumeLuaScript = file_get_contents($luaPath);
         }
 
         $nowTs = now()->timestamp;
 
         try {
-            $raw = Redis::evalsha(self::$staminaLogicScriptSha, 1, $key, $field, (string)$amount, (string)$nowTs);
+            $raw = Redis::eval(self::$consumeLuaScript, 1, $key, $field, (string)$amount, (string)$nowTs);
 
             if ($raw === false) {
-                Log::error("[StaminaService] Redis::evalsha retornou false.", compact('field', 'amount'));
+                Log::error("[consumeStamina] Redis::eval retornou false.", ['field' => $field, 'amount' => $amount]);
                 return null;
             }
 
             $decoded = json_decode($raw, true);
-
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                Log::error("[StaminaService] Falha ao decodificar JSON do Lua script", [
+            if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+                Log::error("[consumeStamina] Falha ao decodificar JSON do Lua script", [
                     'raw' => $raw,
                     'json_last_error' => json_last_error_msg(),
                     'field' => $field,
+                    'amount' => $amount,
                 ]);
                 return null;
             }
 
-            if (isset($decoded['error'])) {
-                Log::warning("❌ [StaminaService] Erro retornado pelo script Lua", [
+            if (isset($decoded['error']) && $decoded['error'] === 'insufficient') {
+                Log::warning("❌ [consumeStamina] Stamina insuficiente", [
                     'field' => $field,
-                    'error' => $decoded['error'],
-                    'message' => $decoded['message'] ?? null,
+                    'current' => $decoded['current'] ?? null,
+                    'needed' => $amount
                 ]);
                 return null;
             }
 
-            Log::info("✅ [StaminaService] Operação de stamina aplicada", [
+            Log::info("✅ [consumeStamina] Consumo aplicado", [
                 'field' => $field,
                 'amount' => $amount,
-                'result' => $decoded,
+                'used_stamina_total' => $decoded['used'] ?? null,
+                'current_after' => $decoded['current_after'] ?? null
             ]);
 
             return $decoded;
         } catch (\Throwable $e) {
-            Log::error("[StaminaService] Erro ao executar Lua script: " . $e->getMessage(), ['exception' => $e]);
+            Log::error("[consumeStamina] Erro ao executar Lua script: " . $e->getMessage(), ['exception' => $e]);
             return null;
         }
-    }
-
-    public static function getCurrentStamina(string $battleId, string $id, string $type = 'character'): float
-    {
-        $result = self::applyStaminaChange($battleId, $id, 0, $type);
-        return $result['current_after'] ?? 0.0;
-    }
-
-    public static function consumeStamina(string $battleId, string $id, int $amount, string $type = 'character'): ?array
-    {
-        return self::applyStaminaChange($battleId, $id, $amount, $type);
     }
 }
