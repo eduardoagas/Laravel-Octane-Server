@@ -179,7 +179,7 @@ class SkillService
         } elseif (($skill['type'] ?? '') === 'buff') {
             $power = $skill['power'] ?? 0;
         } elseif (($skill['type'] ?? '') === 'heal') {
-           $power = $this->calculateDamage(
+            $power = $this->calculateDamage(
                 $skill['power'] ?? 0,
                 $casterStats,
                 'magical',
@@ -201,6 +201,9 @@ class SkillService
         $evalResult = null;
         $lastException = null;
         $phpEvalElapsedMs = null;
+
+        // Extraia os efeitos adicionais
+        $addEffects = $skill['add_effects'] ?? [];
 
         while ($attempt < $maxAttempts) {
             $attempt++;
@@ -225,6 +228,7 @@ class SkillService
                     $maxStacks,         // ARGV[13]
                     $stackBehavior,     // ARGV[14]
                     $skill['lock_time'] ?? null, // ARGV[15]
+                    json_encode($addEffects), //ARGV[16]
                 );
                 $phpEvalElapsedMs = (microtime(true) - $evalStart) * 1000.0;
                 Log::info("[SkillService][LuaEval] attempt={$attempt} php_eval_ms=" . round($phpEvalElapsedMs, 2) . " redis_key={$redisKey} caster={$casterType}:{$casterId} target={$target['instanceId']} skill={$skillId}");

@@ -36,6 +36,7 @@ local maxStacks = tonumber(ARGV[13]) or 1
 local stackBehavior = ARGV[14] or "refresh"
 
 local lockTime = tonumber(ARGV[15]) or 0
+local addEffectsJson = ARGV[16] or nil
 
 local t_start = redis.call("TIME")
 
@@ -445,6 +446,90 @@ local function apply_buff(casterId, casterType, targetId, stat, power, duration)
     end
 end
 
+if addEffectsJson then
+    local addEffects = cjson.decode(addEffectsJson)
+
+    result["buffs_applied_add_effects"] = result["buffs_applied_add_effects"] or {}
+    result["debuffs_applied_add_effects"] = result["debuffs_applied_add_effects"] or {}
+
+    for i, effect in ipairs(addEffects) do
+        local effStat = effect["stat"] or ""
+        local effValue = tonumber(effect["value"] or 0)
+        local effSkillId = effect["skill_id"] or nil
+
+        if effStat ~= "" and effValue ~= 0 then
+            local field = tostring(targetId) .. ":" .. effStat .. ":" .. tostring(casterId)
+            local isBuff = (skillType == "buff") or (stackableFlag == true)
+
+            -- read existing entry
+            local existing = redis.call("HGET", isBuff and buffsHashKey or debuffsHashKey, field)
+            local newEffect = {
+                caster_id = casterId,
+                caster_type = casterType,
+                stat = effStat,
+                power = math.floor(effValue),
+                duration = duration and math.floor(duration) or nil,
+                applied_at = redis.call("TIME")[1],
+                parent_skill_id = effSkillId,
+                tick_skill_id = tickSkillId,
+                tick_interval = tickInterval,
+                stacks = 1,
+                max_stacks = maxStacks,
+                stack_behavior = stackBehavior
+            }
+
+            if existing then
+                local old = cjson.decode(existing)
+                if stackableFlag then
+                    local oldStacks = tonumber(old["stacks"] or 1)
+                    if stackBehavior == "add" then
+                        old["stacks"] = math.min(maxStacks, oldStacks + 1)
+                        old["power"] = (old["power"] or 0) + math.floor(effValue)
+                        old["duration"] = newEffect.duration
+                        old["applied_at"] = newEffect.applied_at
+                    elseif stackBehavior == "refresh" then
+                        old["duration"] = newEffect.duration
+                        old["applied_at"] = newEffect.applied_at
+                        if math.floor(effValue) > (old["power"] or 0) then
+                            old["power"] = math.floor(effValue)
+                        end
+                    elseif stackBehavior == "replace" then
+                        old = newEffect
+                    else
+                        old["stacks"] = math.min(maxStacks, oldStacks + 1)
+                        old["power"] = (old["power"] or 0) + math.floor(effValue)
+                        old["duration"] = newEffect.duration
+                        old["applied_at"] = newEffect.applied_at
+                    end
+                    redis.call("HSET", isBuff and buffsHashKey or debuffsHashKey, field, cjson.encode(old))
+                    table.insert(isBuff and result["buffs_applied_add_effects"] or result["debuffs_applied_add_effects"], old)
+                else
+                    old["duration"] = newEffect.duration
+                    old["applied_at"] = newEffect.applied_at
+                    if math.floor(effValue) > (old["power"] or 0) then
+                        old["power"] = math.floor(effValue)
+                    end
+                    redis.call("HSET", isBuff and buffsHashKey or debuffsHashKey, field, cjson.encode(old))
+                    table.insert(isBuff and result["buffs_applied_add_effects"] or result["debuffs_applied_add_effects"], old)
+                end
+            else
+                -- não existe ainda
+                redis.call("HSET", isBuff and buffsHashKey or debuffsHashKey, field, cjson.encode(newEffect))
+                redis.call("SADD", isBuff and buffIndexInstance or debuffIndexInstance, field)
+                table.insert(isBuff and result["buffs_applied_add_effects"] or result["debuffs_applied_add_effects"], newEffect)
+            end
+
+            -- 🔹 Checagem de "death" para debuffs
+            if not isBuff and effStat == "death" and tonumber(stats["current_hp"] or 0) > 0 then
+                apply_hp_delta(targetKey, battleId, targetId, stats, -999999)
+                stats["current_hp"] = 0
+                someoneDied = true
+            end
+        end
+    end
+end
+
+
 -- === Funções auxiliares para elementos ===
 local function get_element_potency(statsTable, element)
     if element == "neutral" then
@@ -617,6 +702,8 @@ else
         error = "Unknown skill/item type: " .. tostring(skillType)
     })
 end
+
+
 
 -- === Lock handling ===
 if lockTime > 0 then
