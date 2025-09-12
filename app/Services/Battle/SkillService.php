@@ -219,7 +219,7 @@ class SkillService
             $attempt++;
             $evalStart = microtime(true);
             try {
-                $evalResult = Redis::eval(
+                $evalResult = Redis::evalsha(
                     $luaScript,
                     1,
                     $redisKey,
