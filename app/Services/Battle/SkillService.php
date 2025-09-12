@@ -39,9 +39,20 @@ class SkillService
         // ... outros como fallback, se quiser
     ];
 
+    private string $luaScript;
+    private ?string $luaSha = null;
+
     public function __construct()
     {
         $this->staminaService = new StaminaService();
+        $this->luaScript = file_get_contents(storage_path("redis_scripts/battle_skill_indexed.lua"));
+        // opcional: script load para usar EVALSHA
+        try {
+            $this->luaSha = Redis::command('SCRIPT', ['LOAD', $this->luaScript])[0] ?? null;
+        } catch (\Throwable $e) {
+            // fallback: continue sem sha
+            $this->luaSha = null;
+        }
     }
 
     /**
@@ -165,8 +176,7 @@ class SkillService
         // targetKey base (usado como KEYS[1] pelo script)
         $targetKey = ($targetType ?? 'character') === 'monster' ? 'monsters' : 'characters_data';
         $redisKey = "battle:$battleId:$targetKey";
-        $luaPath = storage_path("redis_scripts/battle_skill_indexed.lua"); // NOVO: novo script indexado
-        $luaScript = file_get_contents($luaPath);
+        $luaScript = $this->luaScript;
 
         // cálculo de power dependendo do type
         if (($skill['type'] ?? '') === 'physical' || ($skill['type'] ?? '') === 'magical') {
@@ -232,7 +242,7 @@ class SkillService
                     json_encode($addEffects), //ARGV[17]
                 );
                 $phpEvalElapsedMs = (microtime(true) - $evalStart) * 1000.0;
-                Log::info("[SkillService][LuaEval] attempt={$attempt} php_eval_ms=" . round($phpEvalElapsedMs, 2) . " redis_key={$redisKey} caster={$casterType}:{$casterId} target={$target['instanceId']} skill={$skillId}");
+                Log::alert("[SkillService][LuaEval] attempt={$attempt} php_eval_ms=" . round($phpEvalElapsedMs, 2) . " redis_key={$redisKey} caster={$casterType}:{$casterId} target={$target['instanceId']} skill={$skillId}");
 
                 if ($evalResult) {
                     break;

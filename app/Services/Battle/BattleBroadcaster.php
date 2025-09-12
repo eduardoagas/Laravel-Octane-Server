@@ -25,18 +25,10 @@ class BattleBroadcaster
                 return;
             }
 
-            foreach ($characterIds as $charId) {
-                // Opcional: buscar dados do character no hash se necessário
-                $charJson = Redis::hget("battle:{$battleId}:characters", $charId); // se tiver hash
-                if ($charJson) {
-                    $charData = json_decode($charJson, true);
-                } else {
-                    $charData = ['id' => $charId]; // fallback se não houver hash
-                }
+            $channels = array_map(fn($id) => "character.{$id}", $characterIds);
 
-                Log::info("[BattleBroadcaster] Enviando payload para character {$charId}", $payload);
-                self::broadcastToCharacter($charId, $payload, $eventName);
-            }
+            Log::info("[BattleBroadcaster] broadcasting to channels count=" . count($channels));
+            Broadcast::driver('reverb')->broadcast($channels, $eventName, $payload);
 
             Log::info("[BattleBroadcaster] Broadcast concluído para todos personagens da batalha {$battleId} com evento {$eventName}");
         } catch (\Throwable $e) {
@@ -44,7 +36,7 @@ class BattleBroadcaster
         }
     }
 
-    public static function broadcastToCharacter(
+    /*public static function broadcastToCharacter(
         string|int $characterId,
         array $payload,
         string $eventName = 'updateYourself'
@@ -62,5 +54,5 @@ class BattleBroadcaster
         } catch (\Throwable $e) {
             Log::error("[ReverbDirect] Error ao enviar para {$channel}: " . $e->getMessage());
         }
-    }
+    }*/
 }

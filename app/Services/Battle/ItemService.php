@@ -28,9 +28,19 @@ class ItemService
             'level' => 1,
         ],*/];
 
+    private string $battleLuaScript; // armazenará o conteúdo do Lua script
+
+
     public function __construct()
     {
         $this->staminaService = new StaminaService();
+
+        // Carrega o Lua script uma vez no construtor
+        $luaPath = storage_path("redis_scripts/battle_skill_indexed.lua");
+        if (!file_exists($luaPath)) {
+            throw new \RuntimeException("Lua script não encontrado em: $luaPath");
+        }
+        $this->battleLuaScript = file_get_contents($luaPath);
     }
 
     /**
@@ -136,12 +146,9 @@ class ItemService
             ];
         }
 
-        // --- caso não seja stamina: comportamento antigo (chama lua) ---
-        $luaPath = storage_path("redis_scripts/battle_skill_indexed.lua");
-        $luaScript = file_get_contents($luaPath);
 
         $evalResult = Redis::eval(
-            $luaScript,
+            $this->battleLuaScript,
             1,
             $redisKey,
             $item['effect_type'] ?? '',
