@@ -1,29 +1,18 @@
--- consume_stamina.lua (analítico, compatível com Redis Lua 5.1)
--- Versão: sem 'goto' (compatível com Lua 5.1), com top-level pcall e retornos seguros.
--- KEYS[1] = redis hash key (battle:<id>:stamina_data)
--- ARGV[1] = field (e.g. "character:123")
--- ARGV[2] = amount (number as string). Convention: positive = consume, negative = recover
--- ARGV[3] = now timestamp (number as string)
+-- consume_stamina_optimized.lua
+-- Analítico, compatível Redis Lua 5.1, sem goto, top-level pcall seguro
 
 local function safe_encode(tbl)
   local ok, encoded = pcall(cjson.encode, tbl)
-  if ok and encoded then
-    return encoded
-  end
-  -- fallback manual (garante string JSON)
-  local parts = {}
-  table.insert(parts, "{")
+  if ok and encoded then return encoded end
+
+  local parts = {"{"}
   local first = true
   for k, v in pairs(tbl) do
     if not first then table.insert(parts, ",") end
     first = false
     local key = tostring(k)
-    if type(v) == "number" or type(v) == "boolean" then
-      table.insert(parts, '"'..key..'":'..tostring(v))
-    else
-      local s = tostring(v):gsub('"', '\\"')
-      table.insert(parts, '"'..key..'":"'..s..'"')
-    end
+    local val = (type(v) == "number" or type(v) == "boolean") and tostring(v) or '"'..tostring(v):gsub('"','\\"')..'"'
+    table.insert(parts, '"'..key..'":'..val)
   end
   table.insert(parts, "}")
   return table.concat(parts)
@@ -32,156 +21,96 @@ end
 local function main()
   local hkey = KEYS[1]
   local field = ARGV[1]
-  local amount = tonumber(ARGV[2] or "0") or 0
-  local nowTs = tonumber(ARGV[3] or tostring(os.time())) or os.time()
+  local amount = tonumber(ARGV[2]) or 0
+  local nowTs = tonumber(ARGV[3]) or os.time()
 
-  -- leitura do hash (espera valor JSON por field)
   local raw = redis.call('HGET', hkey, field)
-  if not raw then
-    return safe_encode({ error = "no_data" })
-  end
+  if not raw then return safe_encode({ error = "no_data" }) end
 
   local parsed = cjson.decode(raw) or {}
-
   local start_time = tonumber(parsed['start_time'] or 0)
   local initial = tonumber(parsed['initial_stamina'] or 0)
   local sMax = tonumber(parsed['max_stamina'] or 0)
-  local dex = tonumber(parsed['dexterity'] or 1)
+  local dex = math.max(1, tonumber(parsed['dexterity'] or 1))
   local used = tonumber(parsed['used_stamina_total'] or 0)
 
-  -- constants (MANTER idênticas ao PHP)
-  local minRate = 3.60
-  local maxRate = 20.0
-  local maxDex = 300.0
-  local alpha = 0.3
-
-  -- ABSOLUTE bands (pontos) - MANTER idêntico ao PHP
+  -- constantes
+  local minRate, maxRate, maxDex, alpha = 3.6, 20.0, 300.0, 0.3
   local absBands = {
-    {0.0, 50.0, 0.4},
-    {50.0, 150.0, 0.8},
-    {150.0, 350.0, 1.2},
-    {350.0, 700.0, 1.8},
-    {700.0, 1e30, 3.0},
+    {0,50,0.4},{50,150,0.8},{150,350,1.2},{350,700,1.8},{700,1e30,3.0}
   }
 
+  -- cálculo regeneração
   local elapsed = math.max(0, nowTs - start_time)
-
-  -- baseRegen by dex
   local agiFactor = math.pow(math.min(dex / maxDex, 1.0), alpha)
-  local baseRegen = minRate + (maxRate - minRate) * agiFactor -- stamina por segundo
+  local baseRegen = minRate + (maxRate - minRate) * agiFactor
 
-  -- effective current BEFORE recovered (initial - used)
-  local cur = initial - used
-  if cur < 0 then cur = 0 end
+  local cur = math.max(0, initial - used)
+  local remaining, recovered = elapsed, 0.0
 
-  local remaining = elapsed
-  local recovered = 0.0
-
-  -- regen analítico por bandas (sem goto)
-  for i = 1, #absBands do
-    if remaining <= 0 then break end
-    if cur >= sMax then break end
-
-    local band = absBands[i]
-    local bTo = band[2]
-    if bTo > sMax then bTo = sMax end
-    local mult = band[3]
-
+  for i=1,#absBands do
+    if remaining <= 0 or cur >= sMax then break end
+    local b = absBands[i]
+    local bTo, mult = math.min(b[2], sMax), b[3]
     if cur < bTo then
       local rate = baseRegen * mult
-      if rate <= 0 then
-        remaining = 0
-        break
-      end
-
       local need = bTo - cur
       local timeToFill = need / rate
-
       if timeToFill <= remaining then
-        recovered = recovered + need
         cur = cur + need
+        recovered = recovered + need
         remaining = remaining - timeToFill
       else
         local gain = rate * remaining
-        recovered = recovered + gain
         cur = cur + gain
+        recovered = recovered + gain
         remaining = 0
         break
       end
     end
   end
 
-  -- limitar ao máximo (segurança numérica)
-  if (initial + recovered - used) > sMax then
-    recovered = recovered - ((initial + recovered - used) - sMax)
-  end
-
   local current = math.max(0, math.min(sMax, initial + recovered - used))
 
-  -- HANDLE RECOVERY (amount < 0): add stamina, cap at sMax
+  -- RECUPERAÇÃO (amount < 0)
   if amount < 0 then
     local recoverAmount = -amount
-    local new_current = current + recoverAmount
-    if new_current > sMax then new_current = sMax end
-
-    -- compacta estado: seta initial_stamina para new_current, reset start_time/used
+    local new_current = math.min(sMax, current + recoverAmount)
     parsed['initial_stamina'] = new_current
     parsed['start_time'] = nowTs
     parsed['used_stamina_total'] = 0
     redis.call('HSET', hkey, field, cjson.encode(parsed))
-
-    return safe_encode({
-      used = used,
-      recovered = recoverAmount,
-      current_after = new_current,
-      note = "recovered"
-    })
+    return safe_encode({ used = used, recovered = recoverAmount, current_after = new_current, note="recovered" })
   end
 
-  -- ZERO amount == compact state (não consome nem recupera, só re-sincr)
+  -- ZERO: apenas compactar estado
   if amount == 0 then
     parsed['initial_stamina'] = current
     parsed['start_time'] = nowTs
     parsed['used_stamina_total'] = 0
     redis.call('HSET', hkey, field, cjson.encode(parsed))
-
-    return safe_encode({
-      used = used,
-      current_after = current,
-      note = "zero_cost"
-    })
+    return safe_encode({ used = used, current_after = current, note="zero_cost" })
   end
 
-  -- amount > 0 => consumo normal (verifica suficiência)
+  -- CONSUMO
   if current < amount then
-    return safe_encode({ error = "insufficient", current = current })
+    return safe_encode({ error="insufficient", current=current })
   end
 
-  -- aplicar consumo
   local new_used = used + amount
   local current_after = math.max(0, current - amount)
 
-  -- compacta estado (reseta used)
+  -- compacta estado
   parsed['initial_stamina'] = current_after
   parsed['start_time'] = nowTs
   parsed['used_stamina_total'] = 0
   redis.call('HSET', hkey, field, cjson.encode(parsed))
 
-  return safe_encode({
-    used = new_used,
-    current_after = current_after
-  })
+  return safe_encode({ used = new_used, current_after = current_after })
 end
 
--- TOP-LEVEL PCALL: garante retorno string JSON mesmo em runtime error
+-- TOP-LEVEL PCALL para retorno seguro
 local ok, res = pcall(main)
-if not ok then
-  local msg = tostring(res)
-  return safe_encode({ error = "lua_runtime", message = msg })
-end
-
-if res == nil then
-  return safe_encode({ error = "lua_no_result" })
-end
-
+if not ok then return safe_encode({ error="lua_runtime", message=tostring(res) }) end
+if res == nil then return safe_encode({ error="lua_no_result" }) end
 return res

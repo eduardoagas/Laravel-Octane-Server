@@ -7,57 +7,47 @@ use Illuminate\Support\Facades\Redis;
 
 class StaminaService
 {
-    // Cache do script Lua para chamadas estáticas
     private static ?string $consumeLuaScript = null;
 
-    public function initializeStamina(int $now, float $maxStamina, float $agility): array
+    /**
+     * Inicializa os dados de stamina de um personagem
+     */
+    public function initializeStamina(int $now, float $maxStamina, float $dexterity): array
     {
         return [
             'start_time' => $now,
-            'initial_stamina' => 0,
+            'initial_stamina' => 0.0,
             'max_stamina' => $maxStamina,
-            'dexterity' => $agility,
-            'used_stamina_total' => 0,
+            'dexterity' => $dexterity,
+            'used_stamina_total' => 0.0,
         ];
     }
 
+    /**
+     * Calcula a stamina atual considerando tempo decorrido e regeneração
+     */
     public static function getCurrentStamina(string $battleId, string $id, string $type = 'character'): float
     {
-        $field = "{$type}:{$id}";
         $key = "battle:$battleId:stamina_data";
+        $field = "{$type}:{$id}";
         $data = Redis::hget($key, $field);
 
-        Log::info("📥 [getCurrentStamina] Buscando stamina", [
-            'redis_key' => $key,
-            'field' => $field,
-            'raw_data' => $data,
-        ]);
-
-        if (!$data) {
-            Log::warning("⚠️ Nenhum dado de stamina encontrado", [
-                'battleId' => $battleId,
-                'field' => $field
-            ]);
-            return 0.0;
-        }
+        if (!$data) return 0.0;
 
         $parsed = json_decode($data, true);
-
         $startTime = (int) ($parsed['start_time'] ?? 0);
         $initial = (float) ($parsed['initial_stamina'] ?? 0.0);
         $sMax = (float) ($parsed['max_stamina'] ?? 0.0);
         $dex = max(1.0, (float) ($parsed['dexterity'] ?? 0.0));
         $used = (float) ($parsed['used_stamina_total'] ?? 0.0);
 
-        $elapsed = now()->timestamp - $startTime;
-
-        Log::info("📊 [getCurrentStamina] Dados extraídos:", compact('startTime', 'initial', 'sMax', 'dex', 'elapsed', 'used'));
+        $elapsed = max(0.0, now()->timestamp - $startTime);
 
         // ---------- constantes ----------
-        $minRate = 3.60;
+        $minRate = 3.6;
         $maxRate = 20.0;
         $maxDex = 300.0;
-        $alpha   = 0.3;
+        $alpha = 0.3;
 
         $absBands = [
             [0.0, 50.0, 0.4],
@@ -70,66 +60,47 @@ class StaminaService
         $agiFactor = pow(min($dex / $maxDex, 1.0), $alpha);
         $baseRegen = $minRate + ($maxRate - $minRate) * $agiFactor;
 
-        $remaining = max(0.0, (float)$elapsed);
-        $currentSim = max(0.0, $initial - $used);
+        $current = max(0.0, $initial - $used);
+        $remaining = $elapsed;
         $recovered = 0.0;
 
-        foreach ($absBands as $band) {
-            if ($remaining <= 0.0 || $currentSim >= $sMax) break;
+        foreach ($absBands as [$from, $to, $mult]) {
+            if ($remaining <= 0.0 || $current >= $sMax) break;
 
-            [$bFrom, $bTo, $mult] = $band;
-            $bTo = min($bTo, $sMax);
-            if ($currentSim >= $bTo) continue;
+            $bandMax = min($to, $sMax);
+            if ($current >= $bandMax) continue;
 
-            $target = $bTo;
+            $need = $bandMax - $current;
             $rate = $baseRegen * $mult;
-            if ($rate <= 0.0) break;
-
-            $need = $target - $currentSim;
             $timeToFill = $need / $rate;
 
             if ($timeToFill <= $remaining) {
                 $recovered += $need;
-                $currentSim += $need;
+                $current += $need;
                 $remaining -= $timeToFill;
             } else {
                 $gain = $rate * $remaining;
                 $recovered += $gain;
-                $currentSim += $gain;
-                $remaining = 0.0;
+                $current += $gain;
                 break;
             }
         }
 
-        if (($initial + $recovered - $used) > $sMax) {
-            $recovered -= (($initial + $recovered - $used) - $sMax);
-        }
-
         $stamina = max(0.0, min($sMax, $initial + $recovered - $used));
-
-        Log::info("✅ [getCurrentStamina] Resultado calculado:", [
-            'stamina_calculada' => $stamina,
-            'stamina_limitada' => $stamina,
-            'initial_stamina' => $initial,
-            'recovered' => $recovered,
-            'used_stamina_total' => $used,
-            'elapsed_seconds' => $elapsed,
-        ]);
-
         return $stamina;
     }
 
+    /**
+     * Consome stamina via Lua script seguro
+     */
     public static function consumeStamina(string $battleId, string $id, float $amount, string $type = 'character'): ?array
     {
-        $field = "{$type}:{$id}";
         $key = "battle:$battleId:stamina_data";
+        $field = "{$type}:{$id}";
 
         if (self::$consumeLuaScript === null) {
             $luaPath = storage_path("redis_scripts/consume_stamina.lua");
-            if (!file_exists($luaPath)) {
-                Log::error("[consumeStamina] Lua script não encontrado em: $luaPath");
-                return null;
-            }
+            if (!file_exists($luaPath)) return null;
             self::$consumeLuaScript = file_get_contents($luaPath);
         }
 
@@ -137,38 +108,12 @@ class StaminaService
 
         try {
             $raw = Redis::eval(self::$consumeLuaScript, 1, $key, $field, (string)$amount, (string)$nowTs);
-
-            if ($raw === false) {
-                Log::error("[consumeStamina] Redis::eval retornou false.", ['field' => $field, 'amount' => $amount]);
-                return null;
-            }
+            if (!$raw) return null;
 
             $decoded = json_decode($raw, true);
-            if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
-                Log::error("[consumeStamina] Falha ao decodificar JSON do Lua script", [
-                    'raw' => $raw,
-                    'json_last_error' => json_last_error_msg(),
-                    'field' => $field,
-                    'amount' => $amount,
-                ]);
+            if (!$decoded || isset($decoded['error']) && $decoded['error'] === 'insufficient') {
                 return null;
             }
-
-            if (isset($decoded['error']) && $decoded['error'] === 'insufficient') {
-                Log::warning("❌ [consumeStamina] Stamina insuficiente", [
-                    'field' => $field,
-                    'current' => $decoded['current'] ?? null,
-                    'needed' => $amount
-                ]);
-                return null;
-            }
-
-            Log::info("✅ [consumeStamina] Consumo aplicado", [
-                'field' => $field,
-                'amount' => $amount,
-                'used_stamina_total' => $decoded['used'] ?? null,
-                'current_after' => $decoded['current_after'] ?? null
-            ]);
 
             return $decoded;
         } catch (\Throwable $e) {
