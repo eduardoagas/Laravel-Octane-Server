@@ -43,52 +43,26 @@ class StaminaService
 
         $elapsed = max(0.0, now()->timestamp - $startTime);
 
-        // ---------- constantes ----------
+        // constantes
         $minRate = 3.6;
         $maxRate = 20.0;
         $maxDex = 300.0;
         $alpha = 0.3;
 
-        $absBands = [
-            [0.0, 50.0, 0.4],
-            [50.0, 150.0, 0.8],
-            [150.0, 350.0, 1.2],
-            [350.0, 700.0, 1.8],
-            [700.0, PHP_FLOAT_MAX, 3.0],
-        ];
-
+        // regeneração contínua otimizada
         $agiFactor = pow(min($dex / $maxDex, 1.0), $alpha);
         $baseRegen = $minRate + ($maxRate - $minRate) * $agiFactor;
 
         $current = max(0.0, $initial - $used);
-        $remaining = $elapsed;
-        $recovered = 0.0;
+        $fraction = min($current / $sMax, 1.0);
+        $mult = 0.4 + $fraction * (3.0 - 0.4);
+        $recovered = $elapsed * $baseRegen * $mult;
 
-        foreach ($absBands as [$from, $to, $mult]) {
-            if ($remaining <= 0.0 || $current >= $sMax) break;
+        $stamina = max(0.0, min($sMax, $current + $recovered));
 
-            $bandMax = min($to, $sMax);
-            if ($current >= $bandMax) continue;
-
-            $need = $bandMax - $current;
-            $rate = $baseRegen * $mult;
-            $timeToFill = $need / $rate;
-
-            if ($timeToFill <= $remaining) {
-                $recovered += $need;
-                $current += $need;
-                $remaining -= $timeToFill;
-            } else {
-                $gain = $rate * $remaining;
-                $recovered += $gain;
-                $current += $gain;
-                break;
-            }
-        }
-
-        $stamina = max(0.0, min($sMax, $initial + $recovered - $used));
         return $stamina;
     }
+
 
     /**
      * Consome stamina via Lua script seguro
