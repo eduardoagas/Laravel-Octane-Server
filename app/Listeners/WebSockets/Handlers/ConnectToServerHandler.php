@@ -101,9 +101,9 @@ class ConnectToServerHandler implements HandlesUnityEvent
                 'level'          => 1,
                 'strength'       => 10,
                 'intelligence'   => 10,
-                'dexterity'      => 300, //7
+                'dexterity'      => 7, //7
                 'vitality'        => 5,
-                'wisdom' => 300, //2
+                'wisdom' => 2, //2
             ]);
 
             // --- Inventários ---
