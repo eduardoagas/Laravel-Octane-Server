@@ -228,7 +228,8 @@ class SkillService
                     $maxStacks,         // ARGV[13]
                     $stackBehavior,     // ARGV[14]
                     $skill['lock_time'] ?? null, // ARGV[15]
-                    json_encode($addEffects), //ARGV[16]
+                    $skill['id'], //ARGV[16]
+                    json_encode($addEffects), //ARGV[17]
                 );
                 $phpEvalElapsedMs = (microtime(true) - $evalStart) * 1000.0;
                 Log::info("[SkillService][LuaEval] attempt={$attempt} php_eval_ms=" . round($phpEvalElapsedMs, 2) . " redis_key={$redisKey} caster={$casterType}:{$casterId} target={$target['instanceId']} skill={$skillId}");

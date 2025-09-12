@@ -47,7 +47,7 @@ class SubscribeConfirmedHandler implements HandlesUnityEvent
 
             // Normaliza o campo stats: pode ser JSON string, "Array", já-array, etc.
             $characterData['stats'] = $this->normalizeStatsValue($characterData['stats'] ?? null);
-
+            $characterData = $this->filterCharacterData($characterData);
             //$normalizedStats = $this->normalizeStatsValue($stats);
             //$normalizedSoulsArray = $this->normalizeStatsValue($soulsArray);
 
@@ -67,6 +67,24 @@ class SubscribeConfirmedHandler implements HandlesUnityEvent
         // —————————————
         // Outros canais (se houver)
     }
+
+    protected function filterCharacterData(array $characterData): array
+{
+    return [
+        'id' => $characterData['id'] ?? null,
+        'user_id' => $characterData['user_id'] ?? null,
+        'stats' => [
+            'hp' => $characterData['stats']['hp'] ?? null,
+            'stamina' => $characterData['stats']['stamina'] ?? null,
+            'agility' => $characterData['stats']['agility'] ?? null,
+            // adicione aqui apenas os atributos que o Unity realmente utiliza
+        ],
+        // Campos que o Unity não usa podem ser omitidos ou deixados nulos
+        'name' => $characterData['name'] ?? null,
+        'created_at' => $characterData['created_at'] ?? null,
+        'updated_at' => $characterData['updated_at'] ?? null,
+    ];
+}
 
     /**
      * Normaliza um valor de "stats":
@@ -112,3 +130,4 @@ class SubscribeConfirmedHandler implements HandlesUnityEvent
         return [];
     }
 }
+

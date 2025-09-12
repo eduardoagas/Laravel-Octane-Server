@@ -1,24 +1,26 @@
 -- storage/redis_scripts/battle_skill_indexed.lua
 -- Versão index-based com suporte a stackable buffs/debuffs
--- Reutilizável tanto para "skills" quanto para "items/consumables".
 -- PER-INSTANCE: escreve/ler buffs/debuffs em <targetKey>:<instanceId>:buffs|debuffs
 -- KEYS[1] = target hash (ex: battle:<id>:characters_data OR battle:<id>:monsters)
 -- ARGV:
---  1 = skillType / effect_type (ex: "physical","magical","heal","stamina","buff","debuff","revive","percentageDamage", etc.)
+--  1 = skillType
 --  2 = casterId
 --  3 = targetId (instanceId)
---  4 = power (damage / heal / effect_value)
---  5 = stat (stat afetado para buff/debuff, ou "" se não aplicável)
---  6 = duration (em segundos ou nil)
---  7 = level (opcional)
---  8 = casterType ("character"|"monster")
---  9 = tickSkillId (opcional)
--- 10 = tickInterval (opcional)
+--  4 = power
+--  5 = stat
+--  6 = duration
+--  7 = level
+--  8 = casterType
+--  9 = tickSkillId
+-- 10 = tickInterval
 -- 11 = battleId
--- 12 = stackable ("1" ou "0")
+-- 12 = stackable ("1"|"0")
 -- 13 = max_stacks
--- 14 = stack_behavior ("add"|"refresh"|"replace")
--- 15 = lock_time (em milissegundos, opcional)
+-- 14 = stack_behavior
+-- 15 = lock_time
+-- 16 = parentSkillId (optional)       <-- NEW: id da skill que originou este efeito
+-- 17 = addEffectsJson (optional)       <-- NEW: JSON array dos add_effects (cada {skill_id, stat, value})
+
 local targetKey = KEYS[1]
 local skillType = ARGV[1] or ""
 local casterId = ARGV[2] or ""
@@ -36,11 +38,12 @@ local maxStacks = tonumber(ARGV[13]) or 1
 local stackBehavior = ARGV[14] or "refresh"
 
 local lockTime = tonumber(ARGV[15]) or 0
-local addEffectsJson = ARGV[16] or nil
+local parentSkillId = ARGV[16] or nil
+local addEffectsJson = ARGV[17] or nil
 
 local t_start = redis.call("TIME")
 
--- inferir targetType a partir do targetKey (usado para locks e nomes legíveis)
+-- inferir targetType
 local targetType = "generic"
 if string.find(targetKey, "characters_data") then
     targetType = "character"
@@ -48,21 +51,16 @@ elseif string.find(targetKey, "monsters") then
     targetType = "monster"
 end
 
--- read target entity directly from provided targetKey (NO FALLBACK)
+-- read target entity
 local raw = redis.call("HGET", targetKey, targetId)
 if not raw then
-    return cjson.encode({
-        error = "Target not found in key " .. tostring(targetKey)
-    })
+    return cjson.encode({ error = "Target not found in key " .. tostring(targetKey) })
 end
-
 local entity = cjson.decode(raw)
 
 local function shallow_copy(tbl)
     local copy = {}
-    for k, v in pairs(tbl) do
-        copy[k] = v
-    end
+    for k, v in pairs(tbl) do copy[k] = v end
     return copy
 end
 
@@ -71,44 +69,41 @@ local stats = shallow_copy(entity["stats"] or {})
 local someoneDied = false
 local result = {}
 
--- PER-INSTANCE keys (usando targetKey como base)
+-- PER-INSTANCE keys
 local debuffsHashKey = targetKey .. ":" .. tostring(targetId) .. ":debuffs"
 local buffsHashKey = targetKey .. ":" .. tostring(targetId) .. ":buffs"
 local debuffIndexInstance = targetKey .. ":" .. tostring(targetId) .. ":debuff_index"
 local buffIndexInstance = targetKey .. ":" .. tostring(targetId) .. ":buff_index"
 
--- função auxiliar para aplicar deltas (buffs/debuffs)
+-- função auxiliar para aplicar deltas (buffs/debuffs) sobre snapshot
 local function apply_effects(hashKey, statsTable)
     local entries = redis.call("HGETALL", hashKey)
     for i = 1, #entries, 2 do
         local buffData = cjson.decode(entries[i + 1])
         local statName = buffData["stat"]
-        local power = tonumber(buffData["power"] or 0)
-        if statName and power ~= 0 then
+        local powerVal = tonumber(buffData["power"] or 0)
+        if statName and powerVal ~= 0 then
             local current = tonumber(statsTable[statName] or 0)
-            statsTable[statName] = current + power
+            statsTable[statName] = current + powerVal
         end
     end
 end
 
--- aplica buffs e debuffs sobre os stats originais
+-- aplica buffs e debuffs sobre os stats originais (snapshot)
 apply_effects(buffsHashKey, stats)
 apply_effects(debuffsHashKey, stats)
 
+-- RNG helpers (mantidos)
 local _rand_counter_key = targetKey .. ":" .. targetId .. ":rand_counter"
 local function nano_random()
     local t = redis.call("TIME")
     local secs = tonumber(t[1]) or 0
     local micros = tonumber(t[2]) or 0
     local inc = tonumber(redis.call("INCR", _rand_counter_key) or 0)
-    if inc == 1 then
-        redis.call("EXPIRE", _rand_counter_key, 60)
-    end
+    if inc == 1 then redis.call("EXPIRE", _rand_counter_key, 60) end
     local seed = secs * 1000000 + ((micros + inc) % 1000000)
     math.randomseed(seed)
-    math.random();
-    math.random()
-
+    math.random(); math.random()
     return math.random()
 end
 
@@ -130,118 +125,85 @@ local function get_defense(stats_table, skillType)
     end
 end
 
--- calcula defesa efetiva para dano (com natural_pierce aplicado)
 local function get_damage_defense(stats_table, skillType, casterEntity)
     local defense = get_defense(stats_table, skillType)
     local casterStats = casterEntity and casterEntity["stats"] or {}
     local caster_luk = math.max(1, tonumber(read_stat(casterStats, "luck")) or 0)
 
-    -- funções auxiliares
     local function calc_pierce_range(luk)
         local base = 1 + (luk - 1) * (30 - 1) / (300 - 1)
         local max_pct = 30
         local min_pct = base
-        if luk >= 300 then
-            min_pct = 28 -- não fixa, mas funil no topo
-        end
+        if luk >= 300 then min_pct = 28 end
         return min_pct, max_pct
     end
 
     local function random_pierce(min_pct, max_pct, bias)
-        local r = nano_random() -- usa nosso RNG com seed
+        local r = nano_random()
         local curved = r ^ bias
         return min_pct + (max_pct - min_pct) * curved
     end
 
     local min_pct, max_pct = calc_pierce_range(caster_luk)
-    local pierce_pct = random_pierce(min_pct, max_pct, 4) -- bias=4
+    local pierce_pct = random_pierce(min_pct, max_pct, 4)
     pierce_pct = tonumber(string.format("%.2f", pierce_pct))
 
     local reduced_defense = defense * (1 - pierce_pct / 100)
-    if reduced_defense < 0 then
-        reduced_defense = 0
-    end
+    if reduced_defense < 0 then reduced_defense = 0 end
 
-    -- log para debug
-    result["natural_pierce"] = {
-        applied = true,
-        pierce_pct = pierce_pct,
-        caster_luk = caster_luk
-    }
-
+    result["natural_pierce"] = { applied = true, pierce_pct = pierce_pct, caster_luk = caster_luk }
     return reduced_defense
 end
 
--- helper: update atômico de HP (usando targetKey como base)
+-- helpers de HP / STAMINA (mantidos)
 local function apply_hp_delta(targetKey, battleId, targetId, stats, delta)
     local hpKey = targetKey .. ":" .. tostring(targetId) .. ":hp"
     local currentHp = redis.call("GET", hpKey)
-
     if not currentHp then
         currentHp = tonumber(stats["current_hp"] or 0)
         redis.call("SET", hpKey, currentHp)
     else
         currentHp = tonumber(currentHp)
     end
-
     local newHp = currentHp + delta
-    if newHp < 0 then
-        newHp = 0
-    end
+    if newHp < 0 then newHp = 0 end
     redis.call("SET", hpKey, newHp)
-
     return newHp, currentHp
 end
 
--- helper: update atômico de STAMINA (usando targetKey como base)
 local function apply_stamina_delta(targetKey, battleId, targetId, stats, delta)
     local stKey = targetKey .. ":" .. tostring(targetId) .. ":stamina"
     local currentSt = redis.call("GET", stKey)
-
     if not currentSt then
         currentSt = tonumber(stats["stamina"] or 0)
         redis.call("SET", stKey, currentSt)
     else
         currentSt = tonumber(currentSt)
     end
-
     local newSt = currentSt + delta
-    if newSt < 0 then
-        newSt = 0
-    end
+    if newSt < 0 then newSt = 0 end
     redis.call("SET", stKey, newSt)
-
     return newSt, currentSt
 end
 
--- resolve caster explicitly (no scanning)
+-- resolve caster explicitamente
 local function findCasterExplicit(cId, cType)
-    if cId == nil or cId == "" then
-        return nil
-    end
-    if not battleId or battleId == "" then
-        return nil
-    end
-
+    if cId == nil or cId == "" then return nil end
+    if not battleId or battleId == "" then return nil end
     local casterKey
     if cType == "character" or cType == "player" then
         casterKey = "battle:" .. battleId .. ":characters_data"
     else
         casterKey = "battle:" .. battleId .. ":monsters"
     end
-
     local rawCaster = redis.call("HGET", casterKey, tostring(cId))
-    if not rawCaster then
-        return nil
-    end
+    if not rawCaster then return nil end
     return cjson.decode(rawCaster)
 end
 
--- apply_debuff (per-instance)
+-- === MANTENHO apply_debuff ORIGINAL (sem alteração) ===
 local function apply_debuff(casterId, casterType, targetId, stat, power, duration, level)
-    if stat == nil or stat == "" then
-        return
-    end
+    if stat == nil or stat == "" then return end
 
     local casterEntity = findCasterExplicit(casterId, casterType)
     local casterStats = casterEntity and casterEntity["stats"] or {}
@@ -258,30 +220,15 @@ local function apply_debuff(casterId, casterType, targetId, stat, power, duratio
     end
 
     local stat_chance = caster_luk / (caster_luk + target_vit)
-    local base_chances = {
-        weak = 0.10,
-        medium = 0.20,
-        strong = 0.50
-    }
-    local min_chances = {
-        weak = 0.00,
-        medium = 0.01,
-        strong = 0.10
-    }
-
+    local base_chances = { weak = 0.10, medium = 0.20, strong = 0.50 }
+    local min_chances = { weak = 0.00, medium = 0.01, strong = 0.10 }
     local chance = base_chances[debuff_strength] * stat_chance
 
     -- 🔹 Ajuste pelas resistências (valores entre 0 e 100)
-    local resistance_value = tonumber(stats["nstatus_resistance"]) or 0 -- resistência genérica
-
-    -- resistência específica do tipo de debuff (ex: poison, burn, etc.)
+    local resistance_value = tonumber(stats["nstatus_resistance"]) or 0
     local resistance_key = stat .. "_resistance"
     resistance_value = resistance_value + (tonumber(stats[resistance_key]) or 0)
-
-    -- limite máximo de 100
     resistance_value = math.min(resistance_value, 100)
-
-    -- subtrai proporcionalmente ao valor da resistência
     chance = chance * (1 - resistance_value / 100)
 
     chance = math.max(min_chances[debuff_strength], math.min(0.99, chance))
@@ -303,21 +250,13 @@ local function apply_debuff(casterId, casterType, targetId, stat, power, duratio
                 elseif stackBehavior == "refresh" then
                     old["duration"] = duration
                     old["applied_at"] = redis.call("TIME")[1]
-                    if math.floor(power) > (old["power"] or 0) then
-                        old["power"] = math.floor(power)
-                    end
+                    if math.floor(power) > (old["power"] or 0) then old["power"] = math.floor(power) end
                 elseif stackBehavior == "replace" then
                     old = {
-                        caster_id = casterId,
-                        caster_type = casterType,
-                        stat = stat,
-                        power = math.floor(power),
-                        duration = duration,
-                        applied_at = redis.call("TIME")[1],
-                        tick_skill_id = tickSkillId,
-                        tick_interval = tickInterval,
-                        stacks = 1,
-                        max_stacks = maxStacks,
+                        caster_id = casterId, caster_type = casterType, stat = stat,
+                        power = math.floor(power), duration = duration,
+                        applied_at = redis.call("TIME")[1], tick_skill_id = tickSkillId,
+                        tick_interval = tickInterval, stacks = 1, max_stacks = maxStacks,
                         stack_behavior = stackBehavior
                     }
                 else
@@ -332,24 +271,16 @@ local function apply_debuff(casterId, casterType, targetId, stat, power, duratio
             else
                 old["duration"] = duration
                 old["applied_at"] = redis.call("TIME")[1]
-                if math.floor(power) > (old["power"] or 0) then
-                    old["power"] = math.floor(power)
-                end
+                if math.floor(power) > (old["power"] or 0) then old["power"] = math.floor(power) end
                 redis.call("HSET", debuffsHashKey, field, cjson.encode(old))
                 result["debuff_applied"] = old
             end
         else
             local debuff = {
-                caster_id = casterId,
-                caster_type = casterType,
-                stat = stat,
-                power = math.floor(power),
-                duration = duration,
-                applied_at = redis.call("TIME")[1],
-                tick_skill_id = tickSkillId,
-                tick_interval = tickInterval,
-                stacks = 1,
-                max_stacks = maxStacks,
+                caster_id = casterId, caster_type = casterType, stat = stat,
+                power = math.floor(power), duration = duration,
+                applied_at = redis.call("TIME")[1], tick_skill_id = tickSkillId,
+                tick_interval = tickInterval, stacks = 1, max_stacks = maxStacks,
                 stack_behavior = stackBehavior
             }
             redis.call("HSET", debuffsHashKey, field, cjson.encode(debuff))
@@ -372,13 +303,13 @@ local function apply_debuff(casterId, casterType, targetId, stat, power, duratio
     end
 end
 
--- apply_buff (per-instance)
+-- === apply_buff (mantive lógica original e adicionei parent_skill_id e gravação de add_effects filho) ===
 local function apply_buff(casterId, casterType, targetId, stat, power, duration)
-    if stat == nil or stat == "" then
-        return
-    end
+    if stat == nil or stat == "" then return end
     local field = tostring(targetId) .. ":" .. stat .. ":" .. tostring(casterId)
     local exists = redis.call("HGET", buffsHashKey, field)
+    local now = redis.call("TIME")[1]
+
     if exists then
         local old = cjson.decode(exists)
         if stackableFlag then
@@ -387,150 +318,204 @@ local function apply_buff(casterId, casterType, targetId, stat, power, duration)
                 old["stacks"] = math.min(maxStacks, oldStacks + 1)
                 old["power"] = (old["power"] or 0) + math.floor(power)
                 old["duration"] = duration
-                old["applied_at"] = redis.call("TIME")[1]
+                old["applied_at"] = now
             elseif stackBehavior == "refresh" then
                 old["duration"] = duration
-                old["applied_at"] = redis.call("TIME")[1]
-                if math.floor(power) > (old["power"] or 0) then
-                    old["power"] = math.floor(power)
-                end
+                old["applied_at"] = now
+                if math.floor(power) > (old["power"] or 0) then old["power"] = math.floor(power) end
             elseif stackBehavior == "replace" then
                 old = {
+                    caster_id = casterId, caster_type = casterType,
+                    stat = stat, power = math.floor(power),
+                    duration = duration, applied_at = now,
+                    tick_skill_id = tickSkillId, tick_interval = tickInterval,
+                    stacks = 1, max_stacks = maxStacks,
+                    stack_behavior = stackBehavior,
+                    parent_skill_id = parentSkillId
+                }
+            else
+                old["stacks"] = math.min(maxStacks, oldStacks + 1)
+                old["power"] = (old["power"] or 0) + math.floor(power)
+                old["duration"] = duration
+                old["applied_at"] = now
+            end
+            old["parent_skill_id"] = parentSkillId
+            redis.call("HSET", buffsHashKey, field, cjson.encode(old))
+            redis.call("SADD", buffIndexInstance, field)
+            result["buff_applied"] = old
+        else
+            old["duration"] = duration
+            old["applied_at"] = now
+            if math.floor(power) > (old["power"] or 0) then old["power"] = math.floor(power) end
+            old["parent_skill_id"] = parentSkillId
+            redis.call("HSET", buffsHashKey, field, cjson.encode(old))
+            result["buff_applied"] = old
+        end
+    else
+        local buff = {
+            caster_id = casterId, caster_type = casterType,
+            stat = stat ~= "" and stat or "unknown",
+            power = math.floor(power),
+            duration = duration and math.floor(duration) or nil,
+            applied_at = now,
+            tick_skill_id = tickSkillId,
+            tick_interval = tickInterval,
+            stacks = 1,
+            max_stacks = maxStacks,
+            stack_behavior = stackBehavior,
+            parent_skill_id = parentSkillId
+        }
+        redis.call("HSET", buffsHashKey, field, cjson.encode(buff))
+        redis.call("SADD", buffIndexInstance, field)
+        result["buff_applied"] = buff
+    end
+
+    -- Se vier addEffectsJson, grava filhos (mantendo comportamento de stacks igual ao pai)
+    if addEffectsJson then
+        local ok, addEffects = pcall(function() return cjson.decode(addEffectsJson) end)
+        if ok and type(addEffects) == "table" then
+            result["buffs_applied_add_effects"] = result["buffs_applied_add_effects"] or {}
+            for i, effect in ipairs(addEffects) do
+                local effStat = effect["stat"] or ""
+                local effValue = tonumber(effect["value"] or 0)
+                local effSkillId = effect["skill_id"] or parentSkillId -- fallback
+                if effStat ~= "" and effValue ~= 0 then
+                    local effField = tostring(targetId) .. ":" .. effStat .. ":" .. tostring(casterId)
+                    local existing = redis.call("HGET", buffsHashKey, effField)
+                    local newEffect = {
+                        caster_id = casterId,
+                        caster_type = casterType,
+                        stat = effStat,
+                        power = math.floor(effValue),
+                        duration = duration and math.floor(duration) or nil,
+                        applied_at = now,
+                        parent_skill_id = effSkillId,
+                        tick_skill_id = tickSkillId,
+                        tick_interval = tickInterval,
+                        stacks = 1,
+                        max_stacks = maxStacks,
+                        stack_behavior = stackBehavior
+                    }
+
+                    if existing then
+                        local old = cjson.decode(existing)
+                        if stackableFlag then
+                            local oldStacks = tonumber(old["stacks"] or 1)
+                            if stackBehavior == "add" then
+                                old["stacks"] = math.min(maxStacks, oldStacks + 1)
+                                old["power"] = (old["power"] or 0) + math.floor(effValue)
+                                old["duration"] = newEffect.duration
+                                old["applied_at"] = now
+                            elseif stackBehavior == "refresh" then
+                                old["duration"] = newEffect.duration
+                                old["applied_at"] = now
+                                if math.floor(effValue) > (old["power"] or 0) then old["power"] = math.floor(effValue) end
+                            elseif stackBehavior == "replace" then
+                                old = newEffect
+                            else
+                                old["stacks"] = math.min(maxStacks, oldStacks + 1)
+                                old["power"] = (old["power"] or 0) + math.floor(effValue)
+                                old["duration"] = newEffect.duration
+                                old["applied_at"] = now
+                            end
+                            redis.call("HSET", buffsHashKey, effField, cjson.encode(old))
+                            redis.call("SADD", buffIndexInstance, effField)
+                            table.insert(result["buffs_applied_add_effects"], old)
+                        else
+                            old["duration"] = newEffect.duration
+                            old["applied_at"] = now
+                            if math.floor(effValue) > (old["power"] or 0) then old["power"] = math.floor(effValue) end
+                            redis.call("HSET", buffsHashKey, effField, cjson.encode(old))
+                            table.insert(result["buffs_applied_add_effects"], old)
+                        end
+                    else
+                        redis.call("HSET", buffsHashKey, effField, cjson.encode(newEffect))
+                        redis.call("SADD", buffIndexInstance, effField)
+                        table.insert(result["buffs_applied_add_effects"], newEffect)
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- === Se for debuff e addEffectsJson (filhos), processa similarmente mas grava em debuffsHashKey ===
+if addEffectsJson and skillType == "debuff" then
+    local ok, addEffects = pcall(function() return cjson.decode(addEffectsJson) end)
+    if ok and type(addEffects) == "table" then
+        result["debuffs_applied_add_effects"] = result["debuffs_applied_add_effects"] or {}
+        local now = redis.call("TIME")[1]
+        for i, effect in ipairs(addEffects) do
+            local effStat = effect["stat"] or ""
+            local effValue = tonumber(effect["value"] or 0)
+            local effSkillId = effect["skill_id"] or parentSkillId
+            if effStat ~= "" and effValue ~= 0 then
+                local effField = tostring(targetId) .. ":" .. effStat .. ":" .. tostring(casterId)
+                local existing = redis.call("HGET", debuffsHashKey, effField)
+                local newEffect = {
                     caster_id = casterId,
                     caster_type = casterType,
-                    stat = stat,
-                    power = math.floor(power),
-                    duration = duration,
-                    applied_at = redis.call("TIME")[1],
+                    stat = effStat,
+                    power = math.floor(effValue),
+                    duration = duration and math.floor(duration) or nil,
+                    applied_at = now,
+                    parent_skill_id = effSkillId,
                     tick_skill_id = tickSkillId,
                     tick_interval = tickInterval,
                     stacks = 1,
                     max_stacks = maxStacks,
                     stack_behavior = stackBehavior
                 }
-            else
-                old["stacks"] = math.min(maxStacks, oldStacks + 1)
-                old["power"] = (old["power"] or 0) + math.floor(power)
-                old["duration"] = duration
-                old["applied_at"] = redis.call("TIME")[1]
-            end
-            redis.call("HSET", buffsHashKey, field, cjson.encode(old))
-            redis.call("SADD", buffIndexInstance, field)
-            result["buff_applied"] = old
-        else
-            old["duration"] = duration
-            old["applied_at"] = redis.call("TIME")[1]
-            if math.floor(power) > (old["power"] or 0) then
-                old["power"] = math.floor(power)
-            end
-            redis.call("HSET", buffsHashKey, field, cjson.encode(old))
-            result["buff_applied"] = old
-        end
-    else
-        local buff = {
-            caster_id = casterId,
-            caster_type = casterType,
-            stat = stat ~= "" and stat or "unknown",
-            power = math.floor(power),
-            duration = duration and math.floor(duration) or nil,
-            applied_at = redis.call("TIME")[1],
-            tick_skill_id = tickSkillId,
-            tick_interval = tickInterval,
-            stacks = 1,
-            max_stacks = maxStacks,
-            stack_behavior = stackBehavior
-        }
-        redis.call("HSET", buffsHashKey, field, cjson.encode(buff))
-        redis.call("SADD", buffIndexInstance, field)
-        result["buff_applied"] = buff
-    end
-end
 
-if addEffectsJson then
-    local addEffects = cjson.decode(addEffectsJson)
-
-    result["buffs_applied_add_effects"] = result["buffs_applied_add_effects"] or {}
-    result["debuffs_applied_add_effects"] = result["debuffs_applied_add_effects"] or {}
-
-    for i, effect in ipairs(addEffects) do
-        local effStat = effect["stat"] or ""
-        local effValue = tonumber(effect["value"] or 0)
-        local effSkillId = effect["skill_id"] or nil
-
-        if effStat ~= "" and effValue ~= 0 then
-            local field = tostring(targetId) .. ":" .. effStat .. ":" .. tostring(casterId)
-            local isBuff = (skillType == "buff") or (stackableFlag == true)
-
-            -- read existing entry
-            local existing = redis.call("HGET", isBuff and buffsHashKey or debuffsHashKey, field)
-            local newEffect = {
-                caster_id = casterId,
-                caster_type = casterType,
-                stat = effStat,
-                power = math.floor(effValue),
-                duration = duration and math.floor(duration) or nil,
-                applied_at = redis.call("TIME")[1],
-                parent_skill_id = effSkillId,
-                tick_skill_id = tickSkillId,
-                tick_interval = tickInterval,
-                stacks = 1,
-                max_stacks = maxStacks,
-                stack_behavior = stackBehavior
-            }
-
-            if existing then
-                local old = cjson.decode(existing)
-                if stackableFlag then
-                    local oldStacks = tonumber(old["stacks"] or 1)
-                    if stackBehavior == "add" then
-                        old["stacks"] = math.min(maxStacks, oldStacks + 1)
-                        old["power"] = (old["power"] or 0) + math.floor(effValue)
-                        old["duration"] = newEffect.duration
-                        old["applied_at"] = newEffect.applied_at
-                    elseif stackBehavior == "refresh" then
-                        old["duration"] = newEffect.duration
-                        old["applied_at"] = newEffect.applied_at
-                        if math.floor(effValue) > (old["power"] or 0) then
-                            old["power"] = math.floor(effValue)
+                if existing then
+                    local old = cjson.decode(existing)
+                    if stackableFlag then
+                        local oldStacks = tonumber(old["stacks"] or 1)
+                        if stackBehavior == "add" then
+                            old["stacks"] = math.min(maxStacks, oldStacks + 1)
+                            old["power"] = (old["power"] or 0) + math.floor(effValue)
+                            old["duration"] = newEffect.duration
+                            old["applied_at"] = now
+                        elseif stackBehavior == "refresh" then
+                            old["duration"] = newEffect.duration
+                            old["applied_at"] = now
+                            if math.floor(effValue) > (old["power"] or 0) then old["power"] = math.floor(effValue) end
+                        elseif stackBehavior == "replace" then
+                            old = newEffect
+                        else
+                            old["stacks"] = math.min(maxStacks, oldStacks + 1)
+                            old["power"] = (old["power"] or 0) + math.floor(effValue)
+                            old["duration"] = newEffect.duration
+                            old["applied_at"] = now
                         end
-                    elseif stackBehavior == "replace" then
-                        old = newEffect
+                        redis.call("HSET", debuffsHashKey, effField, cjson.encode(old))
+                        redis.call("SADD", debuffIndexInstance, effField)
+                        table.insert(result["debuffs_applied_add_effects"], old)
                     else
-                        old["stacks"] = math.min(maxStacks, oldStacks + 1)
-                        old["power"] = (old["power"] or 0) + math.floor(effValue)
                         old["duration"] = newEffect.duration
-                        old["applied_at"] = newEffect.applied_at
+                        old["applied_at"] = now
+                        if math.floor(effValue) > (old["power"] or 0) then old["power"] = math.floor(effValue) end
+                        redis.call("HSET", debuffsHashKey, effField, cjson.encode(old))
+                        table.insert(result["debuffs_applied_add_effects"], old)
                     end
-                    redis.call("HSET", isBuff and buffsHashKey or debuffsHashKey, field, cjson.encode(old))
-                    table.insert(isBuff and result["buffs_applied_add_effects"] or result["debuffs_applied_add_effects"], old)
                 else
-                    old["duration"] = newEffect.duration
-                    old["applied_at"] = newEffect.applied_at
-                    if math.floor(effValue) > (old["power"] or 0) then
-                        old["power"] = math.floor(effValue)
-                    end
-                    redis.call("HSET", isBuff and buffsHashKey or debuffsHashKey, field, cjson.encode(old))
-                    table.insert(isBuff and result["buffs_applied_add_effects"] or result["debuffs_applied_add_effects"], old)
-                end
-            else
-                -- não existe ainda
-                redis.call("HSET", isBuff and buffsHashKey or debuffsHashKey, field, cjson.encode(newEffect))
-                redis.call("SADD", isBuff and buffIndexInstance or debuffIndexInstance, field)
-                table.insert(isBuff and result["buffs_applied_add_effects"] or result["debuffs_applied_add_effects"], newEffect)
-            end
+                    redis.call("HSET", debuffsHashKey, effField, cjson.encode(newEffect))
+                    redis.call("SADD", debuffIndexInstance, effField)
+                    table.insert(result["debuffs_applied_add_effects"], newEffect)
 
-            -- 🔹 Checagem de "death" para debuffs
-            if not isBuff and effStat == "death" and tonumber(stats["current_hp"] or 0) > 0 then
-                apply_hp_delta(targetKey, battleId, targetId, stats, -999999)
-                stats["current_hp"] = 0
-                someoneDied = true
+                    -- death check for child debuff
+                    if effStat == "death" and tonumber(stats["current_hp"] or 0) > 0 then
+                        apply_hp_delta(targetKey, battleId, targetId, stats, -999999)
+                        stats["current_hp"] = 0
+                        someoneDied = true
+                    end
+                end
             end
         end
     end
 end
 
-
--- === Funções auxiliares para elementos ===
+-- === Funções auxiliares de elementos (mantidas) ===
 local function get_element_potency(statsTable, element)
     if element == "neutral" then
         return tonumber(statsTable["non_elemental_potency"] or 0)
@@ -551,7 +536,6 @@ local function get_element_resistance(statsTable, element)
     end
 end
 
--- helper para calcular heal com potências
 local function calc_effective_heal(power, casterStats, targetStats)
     local healingPotency = tonumber(casterStats["healing_potency"] or 0)
     local recoverPotency = tonumber(targetStats["recover_potency"] or 0)
@@ -559,54 +543,44 @@ local function calc_effective_heal(power, casterStats, targetStats)
     return math.max(0, math.floor(heal))
 end
 
--- === Skill/Item handling ===
--- Note: 'skillType' covers both skill types and item effect types.
+-- === MAIN: skill handling (mantido) ===
 if skillType == "physical" or skillType == "magical" then
     local casterEntity = findCasterExplicit(casterId, casterType)
     local casterStats = casterEntity and casterEntity["stats"] or {}
-    local element = casterEntity and casterEntity["element"] or "neutral" -- opcional: pode vir da skill
+    local element = casterEntity and casterEntity["element"] or "neutral"
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
     local damage = math.max(0, power)
 
     local elemental_potency = get_element_potency(casterStats, element)
     local elemental_resistance = get_element_resistance(stats, element)
 
-    -- aplica potency primeiro
     damage = math.max(0, (damage * (1 + elemental_potency / 100)))
-
-    -- aplica defesa
     local defense = get_damage_defense(stats, skillType, casterEntity)
     damage = math.max(0, damage - defense)
 
-    -- aplica resistance (negativa aumenta dano)
     if elemental_resistance ~= 0 then
         damage = damage * (1 - elemental_resistance / 100)
     end
 
-    -- aplica resistência final (positiva reduz, negativa aumenta)
     local resistanceStat = skillType == "physical" and "physical_damage_resistance" or "magical_damage_resistance"
-    local resistance = tonumber(stats[resistanceStat] or 0) -- esperado em porcentagem (ex: 20 ou -30)
+    local resistance = tonumber(stats[resistanceStat] or 0)
     if resistance ~= 0 then
         damage = damage * (1 - resistance / 100)
     end
 
     damage = math.floor(damage)
-    -- garante que não fique negativo
-    if damage < 0 then
-        damage = 0
-    end
+    if damage < 0 then damage = 0 end
 
     local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, -damage)
     stats["current_hp"] = newHp
     result["damage_dealt"] = damage
-    if newHp <= 0 and oldHp > 0 then
-        someoneDied = true
-    end
+    if newHp <= 0 and oldHp > 0 then someoneDied = true end
 
+    -- chama apply_debuff ORIGINAL (nada mudado aqui)
     apply_debuff(casterId, casterType, targetId, stat, power, duration, level)
 
-elseif skillType == "physicalPercentageDamage" or skillType == "physicalPurePercentageDamage" or skillType ==
-    "magicalPercentageDamage" or skillType == "magicalPurePercentageDamage" then
+elseif skillType == "physicalPercentageDamage" or skillType == "physicalPurePercentageDamage"
+    or skillType == "magicalPercentageDamage" or skillType == "magicalPurePercentageDamage" then
 
     local maxHp = tonumber(stats["hp"] or 100)
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
@@ -614,24 +588,21 @@ elseif skillType == "physicalPercentageDamage" or skillType == "physicalPurePerc
 
     if skillType == "physicalPercentageDamage" or skillType == "magicalPercentageDamage" then
         damage = currentHpShadow * (power / 100)
-    else -- pure
+    else
         damage = maxHp * (power / 100)
     end
 
-    -- pega caster explicitamente
     local casterEntity = findCasterExplicit(casterId, casterType)
     local casterStats = casterEntity and casterEntity["stats"] or {}
     local element = casterEntity and casterEntity["element"] or "neutral"
     local elemental_potency = get_element_potency(casterStats, element)
 
-    -- elemental resistance
     local elemental_resistance = get_element_resistance(stats, element)
     local effective_elemental_resistance = math.max(0, elemental_resistance - elemental_potency)
     if effective_elemental_resistance ~= 0 then
         damage = damage * (1 - effective_elemental_resistance / 100)
     end
 
-    -- resistência final: física ou mágica
     local resistanceStat = (skillType:find("physical") and "physical_damage_resistance") or "magical_damage_resistance"
     local resistance = tonumber(stats[resistanceStat] or 0)
     local effective_resistance = math.max(0, resistance - elemental_potency)
@@ -640,17 +611,13 @@ elseif skillType == "physicalPercentageDamage" or skillType == "physicalPurePerc
     end
 
     damage = math.floor(math.max(0, damage))
-
     local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, -damage)
     stats["current_hp"] = newHp
     result["damage_dealt"] = damage
-    if newHp <= 0 and oldHp > 0 then
-        someoneDied = true
-    end
+    if newHp <= 0 and oldHp > 0 then someoneDied = true end
 
     apply_debuff(casterId, casterType, targetId, stat, power, duration, level)
 
-    -- === Skill/Item handling ===
 elseif skillType == "heal" then
     local maxHp = tonumber(stats["hp"] or 100)
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
@@ -658,7 +625,6 @@ elseif skillType == "heal" then
         local casterEntity = findCasterExplicit(casterId, casterType)
         local casterStats = casterEntity and casterEntity["stats"] or {}
         local healPower = calc_effective_heal(power, casterStats, stats)
-
         local effectiveHeal = math.min(healPower, maxHp - currentHpShadow)
         if effectiveHeal > 0 then
             local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, effectiveHeal)
@@ -668,11 +634,8 @@ elseif skillType == "heal" then
     end
 
 elseif skillType == "stamina" then
-    -- Delegado ao PHP: não tocar stamina aqui para evitar duplicação.
-    -- PHP deve chamar consume_stamina.lua ou StaminaService::consumeStamina após este script.
     result["stamina_delegated_to_php"] = true
     result["stamina_note"] = "handled_by_php"
-    -- não alteramos stats["stamina"] aqui
 
 elseif skillType == "revive" then
     local currentHpShadow = tonumber(stats["current_hp"] or 0)
@@ -681,7 +644,6 @@ elseif skillType == "revive" then
         local casterEntity = findCasterExplicit(casterId, casterType)
         local casterStats = casterEntity and casterEntity["stats"] or {}
         local healPower = calc_effective_heal(power, casterStats, stats)
-
         local effectiveHeal = math.min(healPower, maxHp - currentHpShadow)
         if effectiveHeal > 0 then
             local newHp, oldHp = apply_hp_delta(targetKey, battleId, targetId, stats, effectiveHeal)
@@ -698,14 +660,10 @@ elseif skillType == "debuff" then
     apply_debuff(casterId, casterType, targetId, stat, power, duration, level)
 
 else
-    return cjson.encode({
-        error = "Unknown skill/item type: " .. tostring(skillType)
-    })
+    return cjson.encode({ error = "Unknown skill/item type: " .. tostring(skillType) })
 end
 
-
-
--- === Lock handling ===
+-- Lock handling (mantido)
 if lockTime > 0 then
     local lockKey = "skill_lock:" .. battleId .. ":" .. targetType .. ":" .. targetId
     local currentLock = tonumber(redis.call("GET", lockKey) or 0)
@@ -719,23 +677,14 @@ if lockTime > 0 then
     end
 end
 
--- só atualiza HP e stamina no entity, nunca mexe nos outros stats base
-if stats["current_hp"] ~= nil then
-    entity["stats"]["current_hp"] = stats["current_hp"]
-end
-
-if stats["stamina"] ~= nil then
-    entity["stats"]["current_stamina"] = stats["current_stamina"]
-end
-
+-- só atualiza HP e stamina no entity
+if stats["current_hp"] ~= nil then entity["stats"]["current_hp"] = stats["current_hp"] end
+if stats["stamina"] ~= nil then entity["stats"]["current_stamina"] = stats["current_stamina"] end
 redis.call("HSET", targetKey, targetId, cjson.encode(entity))
 
 result["target_died"] = someoneDied
 result["current_hp"] = math.floor(stats["current_hp"] or 0)
--- garante que current_stamina esteja presente sempre (se não definido, tenta ler do stats)
-if stats["current_stamina"] ~= nil then
-    entity["stats"]["current_stamina"] = math.floor(stats["current_stamina"])
-end
+if stats["current_stamina"] ~= nil then entity["stats"]["current_stamina"] = math.floor(stats["current_stamina"]) end
 
 local t2 = redis.call("TIME")
 local exec_ms = (t2[1] - t_start[1]) * 1000 + (t2[2] - t_start[2]) / 1000

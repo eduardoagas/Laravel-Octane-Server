@@ -468,7 +468,7 @@ class BattleWithMonsterHandler
                         'instanceId' => (string)$playerInstanceId,
                         'currentHp' => (int)($stats['current_hp'] ?? ($stats['hp'] ?? 0)),
                         'staminaData' => $characterStaminaData,
-                        'stats' => $stats,
+                        //'stats' => $stats,
                         'soulSlotIndex' => $preferredSlot,
                     ]
                 ],
