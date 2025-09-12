@@ -43,21 +43,36 @@ class StaminaService
 
         $elapsed = max(0.0, now()->timestamp - $startTime);
 
-        // constantes
         $minRate = 3.6;
         $maxRate = 20.0;
         $maxDex = 300.0;
         $alpha = 0.3;
 
-        // regeneração contínua otimizada
+        // bandas simplificadas (não precisa percorrer todas)
+        $bands = [
+            [0.0, 50.0, 1.0],
+            [50.0, 150.0, 1.2],
+            [150.0, 350.0, 1.4],
+            [350.0, 700.0, 1.8],
+            [700.0, PHP_FLOAT_MAX, 3.0],
+        ];
+
         $agiFactor = pow(min($dex / $maxDex, 1.0), $alpha);
         $baseRegen = $minRate + ($maxRate - $minRate) * $agiFactor;
 
         $current = max(0.0, $initial - $used);
-        $fraction = min($current / $sMax, 1.0);
-        $mult = 0.4 + $fraction * (3.0 - 0.4);
-        $recovered = $elapsed * $baseRegen * $mult;
+        $fraction = 0.0;
 
+        // cálculo do multiplicador interpolado
+        foreach ($bands as [$from, $to, $mult]) {
+            if ($current >= $from && $current <= $to) {
+                $fraction = ($current - $from) / ($to - $from);
+                $mult = $mult * (0.4 + 0.6 * $fraction); // suaviza
+                break;
+            }
+        }
+
+        $recovered = $elapsed * $baseRegen * $mult;
         $stamina = max(0.0, min($sMax, $current + $recovered));
 
         return $stamina;
