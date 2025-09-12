@@ -434,18 +434,22 @@ class BattleWithMonsterHandler
 
 
         // 8️⃣ Inicializar stamina do monstro
-        $monsterStaminaData = $this->staminaService->initializeStamina(
-            $now,
+        $monsterStaminaData = $this->staminaService->createStaminaData(
+            $battleId,
+            $monsterInstanceId,
             (int)($monsterStats['stamina'] ?? 0),
-            (int)($monsterStats['dexterity'] ?? 0)
+            (int)($monsterStats['dexterity'] ?? 0),
+            'monster'
         );
         Redis::hset("battle:$battleId:stamina_data", "monster:{$monsterInstanceId}", json_encode($monsterStaminaData, JSON_UNESCAPED_UNICODE));
 
         // 9️⃣ Inicializar stamina do personagem
-        $characterStaminaData = $this->staminaService->initializeStamina(
-            $now,
+        $characterStaminaData = $this->staminaService->createStaminaData(
+            $battleId,
+            $playerInstanceId,
             (int)($stats['stamina'] ?? 0),
-            (int)($stats['dexterity'] ?? 0)
+            (int)($stats['dexterity'] ?? 0),
+            'character'
         );
         Redis::hset("battle:$battleId:stamina_data", "character:{$playerInstanceId}", json_encode($characterStaminaData, JSON_UNESCAPED_UNICODE));
 
