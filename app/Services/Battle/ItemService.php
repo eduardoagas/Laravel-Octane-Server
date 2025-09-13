@@ -326,11 +326,9 @@ class ItemService
                     $row->quantity = $newQty;
                     $row->save();
                 } else {
-                    // opcional: delete or set quantity=0
                     $row->delete();
                 }
 
-                // Retorna estado DB pra uso posterior
                 return [
                     'old_qty' => $qty,
                     'new_qty' => $newQty,
@@ -338,40 +336,34 @@ class ItemService
                 ];
             });
 
-            // 2) Redis: decrementa tanto a key da batalha quanto a preparatória (se fornecida) com Lua atômico
+            // 2) Redis: decrementa tanto a key da batalha quanto a preparatória (se fornecida)
             $battleKey = "battle:{$battleId}:character:{$playerInstanceId}:consumables";
             $keys = [$battleKey];
             if ($prepRedisKey) $keys[] = $prepRedisKey;
 
-            $lua = file_get_contents(storage_path('redis_scripts/consume_item_multi_keys.lua'));
-            // chama com KEYS = keys, ARGV = [consumableItemId, amount]
-            $eval = Redis::eval($lua, count($keys), ...array_merge($keys, [$consumableItemId, $amount]));
+            $redisResult = $this->consumeItemRedis($keys, $consumableItemId, $amount);
 
-            $redisResult = json_decode($eval, true);
-
-            // 3) Verificação / reconcilliation: se algum key falhou (p.ex. item not found) logar e (opcional) reconciliar com DB
+            // 3) Verificação / reconciliation
             foreach ($redisResult as $idx => $r) {
-                $decoded = is_string($r) ? json_decode($r, true) : $r;
-                if (!isset($decoded['found']) || $decoded['found'] === false) {
+                if (!isset($r['found']) || $r['found'] === false) {
                     Log::warning("[ItemService::consumeItem] Redis update issue for key {$keys[$idx]}", [
-                        'payload' => $decoded,
+                        'payload' => $r,
                         'consumableItemId' => $consumableItemId,
                         'battle' => $battleId,
                         'playerInstance' => $playerInstanceId,
                     ]);
-                    // opcional: re-sync that Redis key from DB here (reconciliação)
+                    // opcional: re-sync do Redis a partir do DB
                 }
             }
 
-            // 4) Opcional: Broadcast do novo inventory/consumables para o player/battle
-            // BattleBroadcaster::broadcastToBattle(...) ou outra função que você use
+            // 4) Opcional: Broadcast para player/battle
+            // BattleBroadcaster::broadcastToBattle(...);
 
             return [
                 'db' => $dbResult,
                 'redis' => $redisResult,
             ];
         } finally {
-            // libera lock
             try {
                 Redis::del($lockKey);
             } catch (\Throwable $_) {
@@ -379,5 +371,109 @@ class ItemService
         }
     }
 
-    
+
+    public function consumeItemRedis(array $keys, int|string $itemId, int $amount = 1): array
+    {
+        $itemIdStr = (string)$itemId;
+        $results = [];
+
+        foreach ($keys as $k => $key) {
+            $hlen = (int)(Redis::hlen($key) ?: 0);
+            if ($hlen > 0) {
+                $hash = Redis::hgetall($key);
+                $updated = false;
+                $newQty = null;
+
+                foreach ($hash as $field => $jsonVal) {
+                    if ($field === $itemIdStr) {
+                        $itm = json_decode($jsonVal, true);
+                        if (!is_array($itm)) {
+                            $results[$k] = ['found' => false, 'message' => 'invalid_json_in_field', 'field' => $field];
+                            continue 2;
+                        }
+
+                        $qty = (int)($itm['quantity'] ?? 0);
+                        $after = $qty - $amount;
+                        if ($after > 0) {
+                            $itm['quantity'] = $after;
+                            Redis::hset($key, $field, json_encode($itm));
+                            $newQty = $after;
+                        } else {
+                            Redis::hdel($key, $field);
+                            $newQty = 0;
+                        }
+                        $updated = true;
+                        break;
+                    } else {
+                        $itm = json_decode($jsonVal, true);
+                        if (is_array($itm) && isset($itm['id']) && (string)$itm['id'] === $itemIdStr) {
+                            $qty = (int)($itm['quantity'] ?? 0);
+                            $after = $qty - $amount;
+                            if ($after > 0) {
+                                $itm['quantity'] = $after;
+                                Redis::hset($key, $field, json_encode($itm));
+                                $newQty = $after;
+                            } else {
+                                Redis::hdel($key, $field);
+                                $newQty = 0;
+                            }
+                            $updated = true;
+                            break;
+                        }
+                    }
+                }
+
+                if ($updated) {
+                    if ((int)(Redis::hlen($key) ?: 0) === 0) Redis::del($key);
+                    $results[$k] = ['found' => true, 'updated' => true, 'new_quantity' => $newQty];
+                } else {
+                    $results[$k] = ['found' => false, 'message' => 'item_not_found'];
+                }
+            } else {
+                $raw = Redis::get($key);
+                if (!$raw) {
+                    $results[$k] = ['found' => false, 'message' => 'key_missing'];
+                    continue;
+                }
+
+                $arr = json_decode($raw, true);
+                if (!is_array($arr)) {
+                    $results[$k] = ['found' => false, 'message' => 'not_array_or_invalid_json'];
+                    continue;
+                }
+
+                $updated = false;
+                $newQty = null;
+                foreach ($arr as $i => $itm) {
+                    if (isset($itm['id']) && (string)$itm['id'] === $itemIdStr) {
+                        $qty = (int)($itm['quantity'] ?? 0);
+                        $after = $qty - $amount;
+                        if ($after > 0) {
+                            $itm['quantity'] = $after;
+                            $arr[$i] = $itm;
+                            $newQty = $after;
+                        } else {
+                            array_splice($arr, $i, 1);
+                            $newQty = 0;
+                        }
+                        $updated = true;
+                        break;
+                    }
+                }
+
+                if ($updated) {
+                    if (count($arr) === 0) {
+                        Redis::del($key);
+                    } else {
+                        Redis::set($key, json_encode($arr));
+                    }
+                    $results[$k] = ['found' => true, 'updated' => true, 'new_quantity' => $newQty];
+                } else {
+                    $results[$k] = ['found' => false, 'message' => 'item_not_found'];
+                }
+            }
+        }
+
+        return $results;
+    }
 }
