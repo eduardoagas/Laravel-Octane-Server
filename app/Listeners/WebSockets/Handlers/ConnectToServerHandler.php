@@ -65,10 +65,10 @@ class ConnectToServerHandler implements HandlesUnityEvent
         $helpers->applyWisdomStatsToCharacter($character);
 
         // --- Se já tiver inventário, apenas atualiza; se não, cria ---
-        
-            // --- Inventários ---
+
+        // --- Inventários ---
         $characterSoulInventory = $character->soulInventory ?? $character->soulInventory()->create();
-$characterSoulGridInventory = $character->soulGridInventory ?? $character->soulGridInventory()->create();
+        $characterSoulGridInventory = $character->soulGridInventory ?? $character->soulGridInventory()->create();
         $consumablesInventory = $character->consumablesInventory ?? $character->consumablesInventory()->create();
         $battlePack = $character->battlePack ?? $character->battlePack()->create(['max_slots' => 4]);
         $helpers->setupConsumables($consumablesInventory, $battlePack, $character);
@@ -101,20 +101,23 @@ $characterSoulGridInventory = $character->soulGridInventory ?? $character->soulG
         return DB::transaction(function () use ($userId) {
             Log::info("NOVO PERSONAGEM CRIADO");
 
-            $character = Character::create([
+            $character = Character::firstOrCreate([
                 'user_id' => $userId,
                 'name'    => "Hero_{$userId}",
             ]);
 
-            // --- Stats iniciais ---
-            $character->stats()->create([
-                'level'          => 1,
-                'strength'       => 10,
-                'intelligence'   => 10,
-                'dexterity'      => 7, //7
-                'vitality'        => 5,
-                'wisdom' => 2, //2
-            ]);
+            // garante que só cria stats se ainda não tiver
+            if (!$character->stats) {
+                $character->stats()->create([
+                    'hp'             => 100,
+                    'strength'       => 10,
+                    'intelligence'   => 5,
+                    'physical_defense'  => 3,
+                    'magical_defense'   => 3,
+                    'dexterity'      => 4,
+                    'stamina'        => 10,
+                ]);
+            }
 
 
             return $character;
@@ -336,29 +339,37 @@ class CharacterHelpers
         $consumablesForRedis = [];
 
         foreach (self::$defaultConsumables as $data) {
+            // Consumable global (definição)
             $consumable = Consumable::firstOrCreate(
                 ['name' => $data['name']],
                 [
-                    'description' => $data['description'],
-                    'effect_type' => $data['effect_type'],
+                    'description'  => $data['description'],
+                    'effect_type'  => $data['effect_type'],
                     'effect_value' => $data['effect_value'],
                 ]
             );
 
-            $item = $inventory->items()->create([
-                'consumable_id' => $consumable->id,
-                'quantity'      => $data['quantity'],
-            ]);
+            // Item no inventário do personagem
+            $item = $inventory->items()
+                ->where('consumable_id', $consumable->id)
+                ->first();
 
-            $slotIndex = $equippedSlots[$data['name']] ?? null;
-
-            if (isset($equippedSlots[$data['name']])) {
-                $battlePack->slots()->create([
-                    'consumable_item_id' => $item->id,
-                    'slot_index'         => $equippedSlots[$data['name']],
+            if (!$item) {
+                $item = $inventory->items()->create([
+                    'consumable_id' => $consumable->id,
+                    'quantity'      => $data['quantity'],
                 ]);
             }
 
+            // Slot equipado no battle pack
+            $slotIndex = $equippedSlots[$data['name']] ?? null;
+            if ($slotIndex !== null) {
+                $battlePack->slots()
+                    ->firstOrCreate(
+                        ['slot_index' => $slotIndex],
+                        ['consumable_item_id' => $item->id]
+                    );
+            }
 
             $consumablesForRedis[$item->id] = [
                 'id'          => $item->id,
@@ -371,36 +382,23 @@ class CharacterHelpers
             ];
         }
 
-        // --- Salva no Redis como hash (mais prático pra atualizar quantities) ---
+        // Salva no Redis
         Redis::hset($consumablesKey, ...collect($consumablesForRedis)->map(function ($c) {
             return [$c['id'], json_encode($c, JSON_UNESCAPED_UNICODE)];
         })->flatten()->toArray());
     }
 
+
     public function setupSkillsAndSouls(Character $character)
     {
         $skills = collect(self::$defaultSkills);
 
-        // primeiro os que não dependem de outro
-        foreach ($skills->whereNull('tick_skill_id') as $id => $skillData) {
-            $addEffects = $skillData['add_effects'] ?? [];
-            unset($skillData['add_effects']); // não existe essa coluna na tabela
-
-            $skillData['id'] = $id; // força o ID
-            $skill = Skill::firstOrCreate(['id' => $id], $skillData);
-
-            // salva add_effects vinculados
-            foreach ($addEffects as $effect) {
-                $skill->addEffects()->firstOrCreate($effect);
-            }
-        }
-
-        // depois os que dependem (tem tick_skill_id)
-        foreach ($skills->whereNotNull('tick_skill_id') as $id => $skillData) {
+        // Skills (não recriar)
+        foreach ($skills as $id => $skillData) {
             $addEffects = $skillData['add_effects'] ?? [];
             unset($skillData['add_effects']);
 
-            $skillData['id'] = $id; // força o ID
+            $skillData['id'] = $id;
             $skill = Skill::firstOrCreate(['id' => $id], $skillData);
 
             foreach ($addEffects as $effect) {
@@ -408,23 +406,31 @@ class CharacterHelpers
             }
         }
 
-        // soul grid base
-        $templateGrid = SoulGrid::where('name', 'Starter Grid')->first();
-        if (!$templateGrid) {
-            $templateGrid = SoulGrid::create(['name' => 'Starter Grid', 'slots_count' => 4]);
+        // Soul grid base
+        $templateGrid = SoulGrid::firstOrCreate(
+            ['name' => 'Starter Grid'],
+            ['slots_count' => 4]
+        );
+
+        if (!$templateGrid->stats()->exists()) {
             $templateGrid->stats()->create([
-                'hp'             => 50,
-                'strength'       => 5,
-                'intelligence'   => 3,
-                'physical_defense'  => 2,
+                'hp'              => 50,
+                'strength'        => 5,
+                'intelligence'    => 3,
+                'physical_defense' => 2,
                 'magical_defense' => 2,
-                'dexterity'      => 2,
-                'stamina'        => 5,
+                'dexterity'       => 2,
+                'stamina'         => 5,
             ]);
         }
 
-        $equippedGrid = $templateGrid->replicateForCharacter($character);
+        // Checar se personagem já tem grid equipado
+        $equippedGrid = $character->equippedSoulGrids;
+        if (!$equippedGrid) {
+            $equippedGrid = $templateGrid->replicateForCharacter($character);
+        }
 
+        // Souls iniciais
         $initialSoulsData = [
             ['name' => 'Soul A', 'skills' => [1, 2, 3, 7]],
             ['name' => 'Soul B', 'skills' => [1, 2, 3, 5]],
@@ -434,25 +440,28 @@ class CharacterHelpers
         $soulsForRedis = [];
 
         foreach ($initialSoulsData as $soulData) {
-            $soul = Soul::create(['name' => $soulData['name']]);
-            $soul->skills()->sync($soulData['skills']);
-            $equippedGrid->souls()->attach($soul->id);
+            $soul = Soul::firstOrCreate(['name' => $soulData['name']]);
+            $soul->skills()->syncWithoutDetaching($soulData['skills']);
+
+            if (!$equippedGrid->souls()->where('souls.id', $soul->id)->exists()) {
+                $equippedGrid->souls()->attach($soul->id);
+            }
 
             $skillsArray = $soul->skills()->get()->map(fn($skill) => [
-                'id' => $skill->id,
-                'name' => $skill->name,
-                'type' => $skill->type,
-                'power' => $skill->power ?? 0,
-                'stamina_cost' => $skill->stamina_cost ?? 0,
-                'pre_delay' => $skill->pre_delay ?? 0,
-                'post_delay' => $skill->post_delay ?? 0,
-                'duration' => $skill->duration ?? null,
-                'level' => $skill->level ?? 1,
-                'stat' => $skill->stat ?? null,
-                'tick_interval' => $skill->tick_interval ?? null,
-                'tick_skill_id' => $skill->tick_skill_id ?? null,
+                'id'             => $skill->id,
+                'name'           => $skill->name,
+                'type'           => $skill->type,
+                'power'          => $skill->power ?? 0,
+                'stamina_cost'   => $skill->stamina_cost ?? 0,
+                'pre_delay'      => $skill->pre_delay ?? 0,
+                'post_delay'     => $skill->post_delay ?? 0,
+                'duration'       => $skill->duration ?? null,
+                'level'          => $skill->level ?? 1,
+                'stat'           => $skill->stat ?? null,
+                'tick_interval'  => $skill->tick_interval ?? null,
+                'tick_skill_id'  => $skill->tick_skill_id ?? null,
                 'tick_skill_flag' => $skill->tick_skill_flag ?? false,
-                'add_effects' => $skill->addEffects->map(fn($effect) => [
+                'add_effects'    => $skill->addEffects->map(fn($effect) => [
                     'stat' => $effect->stat,
                     'value' => $effect->value,
                 ])->toArray(),
@@ -466,20 +475,18 @@ class CharacterHelpers
             }
 
             $soulsForRedis[] = [
-                'id' => $soul->id,
-                'name' => $soul->name,
+                'id'     => $soul->id,
+                'name'   => $soul->name,
                 'skills' => $skillsArray,
             ];
         }
 
-        // --- Salva no Redis ---
+        // Redis updates
         $characterId = $character->id;
-        $gridKey = "world:{$characterId}:character:{$characterId}:equipped_soul_grid";
-        Redis::set($gridKey, json_encode($soulsForRedis, JSON_UNESCAPED_UNICODE));
-
-        $tickSkillsKey = "world:{$characterId}:character:{$characterId}:tick_skills";
-        Redis::set($tickSkillsKey, json_encode(array_values($tickSkillsForRedis), JSON_UNESCAPED_UNICODE));
+        Redis::set("world:{$characterId}:character:{$characterId}:equipped_soul_grid", json_encode($soulsForRedis, JSON_UNESCAPED_UNICODE));
+        Redis::set("world:{$characterId}:character:{$characterId}:tick_skills", json_encode(array_values($tickSkillsForRedis), JSON_UNESCAPED_UNICODE));
     }
+
 
 
     /**
