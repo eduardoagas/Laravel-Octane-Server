@@ -78,121 +78,40 @@ class BattleWithMonsterHandler
         // 6️⃣ Vincular battle_instance_id na sessão
         Redis::hset("session:$token", 'battle_instance_id', $battleId);
 
-        // Preparações
-        $characterModel = null;
+        // ============================================================== //
+        // === AQUI: carregar os dados do jogador A PARTIR DO REDIS "world" na inicialização ===
+        // ============================================================== //
         $soulsArray = [];
-        $preferredSlot = 0;
+        $tickSkillsForInstance = [];
 
-        // NOVO: Carrega sempre do Postgres a equippedSoulGrid -> souls -> skills (fonte única)
         try {
-            $characterModel = Character::with(['equippedSoulGrid.souls.skills'])->find($characterId);
-        } catch (\Throwable $e) {
-            Log::warning("Failed to load Character model (non-fatal). Will proceed with minimal data.", [
+            // keys no formato que você já usou antes:
+            $equippedGridKey = "world:{$characterId}:character:{$characterId}:equipped_soul_grid";
+            $tickSkillsKey = "world:{$characterId}:character:{$characterId}:tick_skills";
+            $consumablesWorldKey = "world:{$characterId}:character:{$characterId}:consumables";
+
+            $equippedGridRaw = Redis::get($equippedGridKey);
+            $tickSkillsRaw = Redis::get($tickSkillsKey);
+            $consumablesHash = Redis::hgetall($consumablesWorldKey);
+
+            $soulsArray = $equippedGridRaw ? json_decode($equippedGridRaw, true) : [];
+            $tickSkillsForInstance = $tickSkillsRaw ? collect(json_decode($tickSkillsRaw, true))->keyBy('id')->toArray() : [];
+
+            // grava a estrutura completa do grid da instância (vinda do world)
+            $instanceGridKey = "battle:$battleId:character:{$playerInstanceId}:equipped_soul_grid";
+            Redis::set($instanceGridKey, json_encode($soulsArray, JSON_UNESCAPED_UNICODE));
+
+            // grava tick_skills normalizadas na instância
+            $instanceTickSkillsKey = "battle:$battleId:character:{$playerInstanceId}:tick_skills";
+            $tickList = array_values($tickSkillsForInstance);
+            Redis::set($instanceTickSkillsKey, json_encode($tickList, JSON_UNESCAPED_UNICODE));
+
+            Log::info("Equipped SoulGrid and tick skills copied from world to instance", [
+                'battle' => $battleId,
                 'character_id' => $characterId,
-                'error' => $e->getMessage(),
+                'souls_count' => count($soulsArray),
+                'tick_skills_count' => count($tickList),
             ]);
-            $characterModel = null;
-        }
-
-        // === NOVO: Sempre construir a estrutura do equipped_soul_grid a partir do DB (Postgres) ===
-        $tickSkillsForInstance = []; // coletor de tick skills (associativo por id)
-        try {
-            if ($characterModel && $characterModel->equippedSoulGrid) {
-                $equippedGrid = $characterModel->equippedSoulGrid;
-
-                // percorre todas as souls do grid e suas skills (vindo do Postgres)
-                $soulsArray = $equippedGrid->souls()->with('skills')->get()->map(function ($soul) use (&$tickSkillsForInstance) {
-                    $skillsArray = $soul->skills->map(function ($skill) use (&$tickSkillsForInstance) {
-                        $skillArr = [
-                            'id' => $skill->id,
-                            'name' => $skill->name,
-                            'type' => $skill->type,
-                            'power' => $skill->power ?? 0,
-                            'stamina_cost' => $skill->stamina_cost ?? 0,
-                            'pre_delay' => $skill->pre_delay ?? 0,
-                            'post_delay' => $skill->post_delay ?? 0,
-                            'duration' => $skill->duration,
-                            'level' => $skill->level ?? 1,
-                            'stat' => $skill->stat,
-                            'tick_interval' => $skill->tick_interval ?? null,
-                            'tick_skill_id' => $skill->tick_skill_id ?? null,
-                            'tick_skill_flag' => $skill->tick_skill_flag ?? false,
-                            'add_effects' => $skill->addEffects->map(fn($effect) => [
-                                'stat' => $effect->stat,
-                                'value' => $effect->value,
-                            ])->toArray(),
-                        ];
-
-                        // Identifica tick skills:
-                        // - se esta skill já é tick (flag true) -> guarda ela
-                        if (!empty($skill->tick_skill_flag)) {
-                            $tickSkillsForInstance[$skill->id] = $skillArr;
-                        }
-
-                        // - se esta skill referencia uma tick via tick_skill_id -> tentamos buscar a tick skill e guardar
-                        if (!empty($skill->tick_skill_id)) {
-                            $tickModel = Skill::find((int)$skill->tick_skill_id);
-                            if ($tickModel) {
-                                $tickArr = [
-                                    'id' => $tickModel->id,
-                                    'name' => $tickModel->name,
-                                    'type' => $tickModel->type,
-                                    'power' => $tickModel->power ?? 0,
-                                    'stamina_cost' => $tickModel->stamina_cost ?? 0,
-                                    'pre_delay' => $tickModel->pre_delay ?? 0,
-                                    'post_delay' => $tickModel->post_delay ?? 0,
-                                    'duration' => $tickModel->duration,
-                                    'level' => $tickModel->level ?? 1,
-                                    'stat' => $tickModel->stat,
-                                    'tick_interval' => $tickModel->tick_interval ?? null,
-                                    'tick_skill_id' => $tickModel->tick_skill_id ?? null,
-                                    'tick_skill_flag' => $tickModel->tick_skill_flag ?? true,
-                                    'add_effects' => $tickModel->addEffects->map(fn($effect) => [
-                                        'stat' => $effect->stat,
-                                        'value' => $effect->value,
-                                    ])->toArray(),
-                                ];
-                                $tickSkillsForInstance[$tickModel->id] = $tickArr;
-                            } else {
-                                Log::warning("Referenced tick skill not found in DB while building grid", [
-                                    'character_id' => $soul->pivot->character_id ?? null,
-                                    'referenced_tick_skill_id' => $skill->tick_skill_id,
-                                ]);
-                            }
-                        }
-
-                        return $skillArr;
-                    })->toArray();
-
-                    return [
-                        'id' => $soul->id,
-                        'name' => $soul->name,
-                        'skills' => $skillsArray,
-                    ];
-                })->values()->toArray();
-
-                // grava a estrutura completa do grid da instância (vinda do Postgres)
-                $instanceGridKey = "battle:$battleId:character:{$playerInstanceId}:equipped_soul_grid";
-                Redis::set($instanceGridKey, json_encode($soulsArray, JSON_UNESCAPED_UNICODE));
-
-                Log::info("Equipped SoulGrid built from Postgres and saved to instance", [
-                    'battle' => $battleId,
-                    'character_id' => $characterId,
-                    'instance_id' => $playerInstanceId,
-                    'soul_grid_id' => $equippedGrid->id,
-                    'souls_count' => count($soulsArray),
-                ]);
-            } else {
-                // sem grid no model: garante chave vazia na instância
-                $soulsArray = [];
-                $instanceGridKey = "battle:$battleId:character:{$playerInstanceId}:equipped_soul_grid";
-                Redis::set($instanceGridKey, json_encode([], JSON_UNESCAPED_UNICODE));
-                Log::info("No equipped SoulGrid found in DB for character; saved empty grid to instance", [
-                    'battle' => $battleId,
-                    'character_id' => $characterId,
-                    'instance_id' => $playerInstanceId,
-                ]);
-            }
         } catch (\Throwable $e) {
             // não bloqueia a batalha; salva vazios e loga
             $soulsArray = [];
@@ -226,26 +145,21 @@ class BattleWithMonsterHandler
             ]);
         }
 
-        // Determina slot inicial da soul ativa (usa model prefer, com fallback 0)
-        $preferredSlot = $characterModel->preferred_soul_slot ?? 0;
+        // determina slot inicial (tenta pegar preferred_soul_slot da sessão)
+        $preferredSlot = isset($characterRaw['preferred_soul_slot']) ? (int)$characterRaw['preferred_soul_slot'] : 0;
         $activeSoul = $soulsArray[$preferredSlot] ?? null;
 
         if ($activeSoul) {
-            // marca active soul e grava as skills dessa soul (para uso imediato)
             Redis::set("battle:$battleId:character:{$playerInstanceId}:active_soul_id", $activeSoul['id']);
-            Redis::set(
-                "battle:$battleId:character:{$playerInstanceId}:skills",
-                json_encode($activeSoul['skills'] ?? [], JSON_UNESCAPED_UNICODE)
-            );
+            Redis::set("battle:$battleId:character:{$playerInstanceId}:skills", json_encode($activeSoul['skills'] ?? [], JSON_UNESCAPED_UNICODE));
 
-            Log::info("Active soul preloaded for battle (from Postgres)", [
+            Log::info("Active soul preloaded for battle (from world)", [
                 'battle' => $battleId,
                 'character_id' => $characterId,
                 'instance_id' => $playerInstanceId,
                 'active_soul_id' => $activeSoul['id'],
             ]);
         } else {
-            // garante que a chave de skills exista (array vazio)
             Redis::set("battle:$battleId:character:{$playerInstanceId}:skills", json_encode([], JSON_UNESCAPED_UNICODE));
         }
 
@@ -371,57 +285,32 @@ class BattleWithMonsterHandler
 
         // === NOVO: carregar consumíveis equipados ===
         try {
-            if ($characterModel) {
-                $equippedConsumables = $characterModel->battlePack
-                    ? $characterModel->battlePack->slots()->with('consumableItem.consumable')->get()
-                    : collect();
-
-                $consumablesForRedis = [];
-
-                foreach ($equippedConsumables as $slot) {
-                    if (!$slot->consumableItem || !$slot->consumableItem->consumable) {
-                        continue;
-                    }
-
-                    $consumable = $slot->consumableItem->consumable;
-                    $item = $slot->consumableItem;
-
-                    $consumablesForRedis[$item->id] = [
-                        'id'          => $item->id,
-                        'name'        => $consumable->name,
-                        'description' => $consumable->description,
-                        'effect_type' => $consumable->effect_type,
-                        'effect_value' => $consumable->effect_value,
-                        'quantity'    => $item->quantity,
-                        'slot_index'  => $slot->slot_index,
-                    ];
+            // grava consumables (hash) na instância para permitir decremento em runtime
+            $instanceConsumablesKey = "battle:$battleId:character:{$playerInstanceId}:consumables";
+            if (!empty($consumablesHash)) {
+                // consumablesHash já está no formato id => jsonString (conforme sua função de setup)
+                // Convert to flat array: [id1, json1, id2, json2, ...]
+                $flat = [];
+                foreach ($consumablesHash as $k => $v) {
+                    $flat[] = (string)$k;
+                    $flat[] = $v;
                 }
+                // Se usar predis/phpredis via facade, hset com múltiplos args funciona
+                Redis::hset($instanceConsumablesKey, ...$flat);
 
-                $instanceConsumablesKey = "battle:$battleId:character:{$playerInstanceId}:consumables";
-
-                // usamos HSET para facilitar decremento em runtime
-                if (!empty($consumablesForRedis)) {
-                    Redis::hset(
-                        $instanceConsumablesKey,
-                        ...collect($consumablesForRedis)->map(function ($c) {
-                            return [$c['id'], json_encode($c, JSON_UNESCAPED_UNICODE)];
-                        })->flatten()->toArray()
-                    );
-
-                    Log::info("Consumables loaded into battle instance", [
-                        'battle' => $battleId,
-                        'character_id' => $characterId,
-                        'instance_id' => $playerInstanceId,
-                        'consumables_count' => count($consumablesForRedis),
-                    ]);
-                } else {
-                    Redis::del($instanceConsumablesKey);
-                    Log::info("No consumables equipped for character", [
-                        'battle' => $battleId,
-                        'character_id' => $characterId,
-                        'instance_id' => $playerInstanceId,
-                    ]);
-                }
+                Log::info("Consumables copied from world to battle instance", [
+                    'battle' => $battleId,
+                    'character_id' => $characterId,
+                    'instance_id' => $playerInstanceId,
+                    'consumables_count' => count($consumablesHash),
+                ]);
+            } else {
+                // garante que não reste lixo
+                Redis::del($instanceConsumablesKey);
+                Log::info("No consumables in world for character; instance consumables key removed", [
+                    'battle' => $battleId,
+                    'character_id' => $characterId,
+                ]);
             }
         } catch (\Throwable $e) {
             Log::error("Failed to load consumables for battle instance", [

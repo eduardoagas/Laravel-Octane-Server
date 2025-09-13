@@ -334,7 +334,7 @@ class CharacterHelpers
         ];
 
         $characterId = $character->id;
-        $consumablesKey = "battle:{$characterId}:character:{$characterId}:consumables";
+        $consumablesKey = "world:{$characterId}:character:{$characterId}:consumables";
 
         $consumablesForRedis = [];
 
@@ -477,10 +477,10 @@ class CharacterHelpers
 
         // --- Salva no Redis ---
         $characterId = $character->id;
-        $gridKey = "battle:{$characterId}:character:{$characterId}:equipped_soul_grid";
+        $gridKey = "world:{$characterId}:character:{$characterId}:equipped_soul_grid";
         Redis::set($gridKey, json_encode($soulsForRedis, JSON_UNESCAPED_UNICODE));
 
-        $tickSkillsKey = "battle:{$characterId}:character:{$characterId}:tick_skills";
+        $tickSkillsKey = "world:{$characterId}:character:{$characterId}:tick_skills";
         Redis::set($tickSkillsKey, json_encode(array_values($tickSkillsForRedis), JSON_UNESCAPED_UNICODE));
     }
 
