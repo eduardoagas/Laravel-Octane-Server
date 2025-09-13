@@ -34,13 +34,6 @@ class ItemService
     public function __construct()
     {
         $this->staminaService = new StaminaService();
-
-        // Carrega o Lua script uma vez no construtor
-        $luaPath = storage_path("redis_scripts/battle_skill_indexed.lua");
-        if (!file_exists($luaPath)) {
-            throw new \RuntimeException("Lua script não encontrado em: $luaPath");
-        }
-        $this->battleLuaScript = file_get_contents($luaPath);
     }
 
     /**
@@ -94,7 +87,7 @@ class ItemService
         string $casterType,
         string $targetType
     ): array {
-        $casterId = (string)$caster['instanceId'];
+        $casterId = (string)($caster['instanceId'] ?? ($caster['id'] ?? ''));
         $item = $this->findConsumableInRedis($battleId, $casterType, $casterId, $itemId)
             ?? self::$consumables[$itemId] ?? null;
         if (!$item) throw new \InvalidArgumentException("Consumable {$itemId} not found");
@@ -105,35 +98,28 @@ class ItemService
 
         // --- Se for stamina, delegar ao PHP (uso do StaminaService) ---
         if (($item['effect_type'] ?? '') === 'stamina') {
-            // amount: power positive => recover, negative => drain (mantém tua convenção)
             $amount = (float)($item['effect_value'] ?? 0);
 
             if ($amount > 0) {
-                // cura stamina: passa valor negativo para o consumeStamina (que subtrai, logo vira soma)
+                // healing stamina: consumeStamina expects negative to add (convention kept)
                 $amount = -$amount;
             }
 
-            // Chama StaminaService (que internamente faz Redis::eval do consume_stamina.lua)
-            // *Sugestão*: ajustar StaminaService::consumeStamina para retornar o decoded array com used/current_after.
             $stRes = StaminaService::consumeStamina($battleId, (string)$target['instanceId'], $amount, $targetType);
 
             if ($stRes === null || (isset($stRes['error']) && $stRes['error'])) {
-                // tratar erro/insuficiente - comportamente que você preferir
                 throw new \RuntimeException("Stamina operation failed: " . json_encode($stRes));
             }
 
-            // se consumeStamina devolver somente float, adaptação: $currentAfter = $stRes (float)
-            // se devolver array (recomendado), use $stRes['current_after']
             $currentAfter = is_array($stRes) ? ($stRes['current_after'] ?? null) : $stRes;
 
-            // Atualiza o entity stats na hash de batalha para manter compatibilidade
-            $rawEntity = Redis::hget($redisKey, $target['instanceId']);
+            // Atualiza entity.stats.stamina para compatibilidade
+            $rawEntity = Redis::hget($redisKey, (string)$target['instanceId']);
             if ($rawEntity) {
-                $entity = json_decode($rawEntity, true);
-                if (!is_array($entity)) $entity = [];
+                $entity = json_decode($rawEntity, true) ?: [];
                 if (!isset($entity['stats']) || !is_array($entity['stats'])) $entity['stats'] = [];
                 $entity['stats']['stamina'] = $currentAfter;
-                Redis::hset($redisKey, $target['instanceId'], json_encode($entity));
+                Redis::hset($redisKey, (string)$target['instanceId'], json_encode($entity, JSON_UNESCAPED_UNICODE));
             }
 
             return [
@@ -146,48 +132,80 @@ class ItemService
             ];
         }
 
+        // --- Para os outros tipos, usamos o BattleSkillProcessor em PHP ---
+        // Precisamos montar um "skill-like" array que o processor entende.
+        $skillLike = [
+            'id' => $item['id'] ?? $itemId,
+            'type' => $item['effect_type'] ?? 'buff', // heal/buff/debuff/physical/magical/...
+            'power' => $item['effect_value'] ?? 0,
+            'stat' => $item['stat'] ?? ($item['effect_stat'] ?? ''),
+            'duration' => $item['duration'] ?? null,
+            'level' => $item['level'] ?? 1,
+            'tick_skill_id' => $item['tick_skill_id'] ?? null,
+            'tick_interval' => $item['tick_interval'] ?? null,
+            'stackable' => $item['stackable'] ?? false,
+            'max_stacks' => $item['max_stacks'] ?? 1,
+            'stack_behavior' => $item['stack_behavior'] ?? 'refresh',
+            'lock_time' => $item['lock_time'] ?? 0,
+            'add_effects' => $item['add_effects'] ?? [],
+        ];
 
-        $evalResult = Redis::eval(
-            $this->battleLuaScript,
-            1,
-            $redisKey,
-            $item['effect_type'] ?? '',
-            $casterId,
-            $target['instanceId'],
-            $item['effect_value'] ?? 0,
-            $item['stat'] ?? '',
-            $item['duration'] ?? null,
-            $item['level'] ?? 1,
-            $casterType,
-            null, // tick_skill_id
-            null, // tick_interval
+        // Garantir que tanto caster quanto target venham com a estrutura esperada (com stats)
+        $casterEntity = $this->loadEntityForProcessor($battleId, $casterType, $caster);
+        $targetEntity = $this->loadEntityForProcessor($battleId, $targetType, $target);
+
+        // Processa via BattleSkillProcessor (PHP)
+        $processor = new BattleSkillProcessor();
+        $options = [
+            'parentSkillId' => $skillLike['id'],
+            'addEffects' => $skillLike['add_effects'],
+            'lock_time' => $skillLike['lock_time'],
+        ];
+
+        $res = $processor->processSkill(
+            $skillLike,
+            $casterEntity,
+            $targetEntity,
             $battleId,
-            '0', // stackable
-            1,   // max_stacks
-            'refresh', // stack_behavior
-            $item['lock_time'] ?? null
+            $casterType,
+            $targetType,
+            $options
         );
 
-        $result = json_decode($evalResult, true);
-        if (!$result) {
-            throw new \RuntimeException("Invalid JSON from Lua script for consumable: " . substr((string)$evalResult, 0, 300));
-        }
-
+        // normaliza retorno para compatibilidade com versão antiga
         return [
             'battle_id' => $battleId,
             'caster_id' => $casterId,
             'item_id' => $itemId,
-            'target_hp' => $result['current_hp'] ?? null,
-            'effect_applied' => $result['effect_applied'] ?? null,
-            'lua_exec_ms' => $result['exec_time_ms'] ?? null,
-            'damage_dealt' => $result['damage_dealt'] ?? null,
-            'healed_amount' => $result['healed_amount'] ?? null,
-            'buff_applied' => $result['buff_applied'] ?? null,
-            'debuff_applied' => $result['debuff_applied'] ?? null,
-            'debuff_chance' => $result['debuff_chance'] ?? null,
-            'debuff_roll' => $result['debuff_roll'] ?? null,
-            'debuff_failed' => $result['debuff_failed'] ?? null,
+            'target_hp' => $res['current_hp'] ?? null,
+            'effect_applied' => $res['buff_applied'] ?? $res['debuff_applied'] ?? null,
+            'lua_exec_ms' => $res['exec_time_ms'] ?? null,
+            'damage_dealt' => $res['damage_dealt'] ?? null,
+            'healed_amount' => $res['healed_amount'] ?? null,
+            'buff_applied' => $res['buff_applied'] ?? null,
+            'debuff_applied' => $res['debuff_applied'] ?? null,
+            'debuff_chance' => $res['debuff_chance'] ?? null,
+            'debuff_roll' => $res['debuff_roll'] ?? null,
+            'debuff_failed' => $res['debuff_failed'] ?? null,
         ];
+    }
+
+    private function loadEntityForProcessor(string $battleId, string $type, array $entityCandidate): array
+    {
+        // se já contém stats array, retorna
+        if (!empty($entityCandidate['stats']) && is_array($entityCandidate['stats'])) {
+            return $entityCandidate;
+        }
+
+        $inst = (string)($entityCandidate['instanceId'] ?? ($entityCandidate['id'] ?? ''));
+        if ($inst === '') return $entityCandidate;
+
+        $hash = ($type === 'monster') ? "battle:{$battleId}:monsters" : "battle:{$battleId}:characters_data";
+        $raw = Redis::hget($hash, $inst);
+        if (!$raw) return $entityCandidate;
+
+        $decoded = json_decode($raw, true);
+        return is_array($decoded) ? $decoded : $entityCandidate;
     }
 
     /**
@@ -360,4 +378,6 @@ class ItemService
             }
         }
     }
+
+    
 }

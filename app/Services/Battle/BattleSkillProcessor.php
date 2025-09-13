@@ -185,10 +185,10 @@ class BattleSkillProcessor
         $t2 = microtime(true);
         $result['exec_time_ms'] = intval(($t2 - $tStart) * 1000);
 
-        
+
         $entity['stats']['current_hp'] = intval($stats['current_hp'] ?? 0);
         Redis::hset($targetHashKey, $targetId, json_encode($entity, JSON_UNESCAPED_UNICODE));
-        
+
         return $result;
     }
 
@@ -293,13 +293,14 @@ class BattleSkillProcessor
         $t = Redis::command('TIME'); // [secs, micros]
         $secs = intval($t[0] ?? 0);
         $micros = intval($t[1] ?? 0);
-        $incKey = "__rand_counter_" . rand(1, 1000000);
-        $inc = intval(Redis::incr($incKey) ?? 0);
-        if ($inc === 1) Redis::expire($incKey, 60);
+
+        // Usa uniqid ou random_int como "incremento local"
+        $inc = random_int(0, 999999);
+
         $seed = $secs * 1000000 + (($micros + $inc) % 1000000);
         mt_srand($seed);
-        mt_rand();
-        mt_rand();
+        mt_rand(); // descarta
+        mt_rand(); // descarta
         return mt_rand() / mt_getrandmax();
     }
 

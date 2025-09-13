@@ -67,8 +67,8 @@ class ConnectToServerHandler implements HandlesUnityEvent
         // --- Se já tiver inventário, apenas atualiza; se não, cria ---
         
             // --- Inventários ---
-        $characterSoulInventory = $character->soulInventory()->create();
-        $characterSoulGridInventory = $character->soulGridInventory()->create();
+        $characterSoulInventory = $character->soulInventory ?? $character->soulInventory()->create();
+$characterSoulGridInventory = $character->soulGridInventory ?? $character->soulGridInventory()->create();
         $consumablesInventory = $character->consumablesInventory ?? $character->consumablesInventory()->create();
         $battlePack = $character->battlePack ?? $character->battlePack()->create(['max_slots' => 4]);
         $helpers->setupConsumables($consumablesInventory, $battlePack, $character);
