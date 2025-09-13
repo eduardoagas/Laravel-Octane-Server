@@ -62,4 +62,10 @@ class SkillServiceHelpers extends SkillService
         $final = max(0.05, $final); // safety floor
         return round($final, 6);
     }
+
+
+
+
+
+    
 }

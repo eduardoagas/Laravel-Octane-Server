@@ -198,7 +198,7 @@ class BattleWithMonsterHandler
 
             Redis::set($deltaHpKey, json_encode([
                 'lost' => 0,
-                'healed' => 0,
+                'hp_max' => $stats['hp'],
                 'dead' => false
             ], JSON_UNESCAPED_UNICODE));
 
@@ -338,7 +338,7 @@ class BattleWithMonsterHandler
 
             Redis::set($deltaHpKey, json_encode([
                 'lost' => 0,
-                'healed' => 0,
+                'hp_max' => $monsterStats['hp'],
                 'dead' => false
             ], JSON_UNESCAPED_UNICODE));
 

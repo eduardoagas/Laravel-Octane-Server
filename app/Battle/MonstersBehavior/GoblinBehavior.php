@@ -6,9 +6,9 @@ use Illuminate\Support\Facades\Log;
 
 class GoblinBehavior implements MonsterBehaviorInterface
 {
-    public function decideAction(array $monsterData, array $battleState): ?array
+    public function decideAction(array $monsterData, array $battleState, int $currentStamina): ?array
     {
-        $stamina = $monsterData['current_stamina'] ?? 0;
+        $stamina = $currentStamina ?? 0;
 
         Log::info("[GoblinBehavior] TO DECIDINDO com stamina atual $stamina");
 

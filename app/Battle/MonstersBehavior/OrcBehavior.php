@@ -6,9 +6,9 @@ use Illuminate\Support\Facades\Log;
 
 class OrcBehavior implements MonsterBehaviorInterface
 {
-    public function decideAction(array $monsterData, array $battleState): ?array
+    public function decideAction(array $monsterData, array $battleState, int $currentStamina): ?array
     {
-        $stamina = $monsterData['current_stamina'] ?? 0;
+        $stamina = $currentStamina ?? 0;
 
         Log::info("[OrcBehavior] TO DECIDINDO com stamina atual $stamina");
 

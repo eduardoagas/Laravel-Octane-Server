@@ -6,10 +6,12 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use App\Exceptions\SkillCooldownException;
 use App\Exceptions\InsufficientStaminaException;
+use App\Helpers\Battle\BattleSkillProcessor;
 
 class SkillService
 {
     private StaminaService $staminaService;
+    private BattleSkillProcessor $processor;
 
     /**
      * Se ainda usar skills em memória como fallback.
@@ -45,14 +47,7 @@ class SkillService
     public function __construct()
     {
         $this->staminaService = new StaminaService();
-        $this->luaScript = file_get_contents(storage_path("redis_scripts/battle_skill_indexed.lua"));
-        // opcional: script load para usar EVALSHA
-        try {
-            $this->luaSha = Redis::command('SCRIPT', ['LOAD', $this->luaScript])[0] ?? null;
-        } catch (\Throwable $e) {
-            // fallback: continue sem sha
-            $this->luaSha = null;
-        }
+        $this->processor = new BattleSkillProcessor();
     }
 
     /**
@@ -176,111 +171,31 @@ class SkillService
         // targetKey base (usado como KEYS[1] pelo script)
         $targetKey = ($targetType ?? 'character') === 'monster' ? 'monsters' : 'characters_data';
         $redisKey = "battle:$battleId:$targetKey";
-        $luaScript = $this->luaScript;
 
-        // cálculo de power dependendo do type
-        if (($skill['type'] ?? '') === 'physical' || ($skill['type'] ?? '') === 'magical') {
-            $power = $this->calculateDamage(
-                $skill['power'] ?? 0,
-                $casterStats,
-                $skill['type'] ?? 'physical',
-                $skill['level'] ?? 1
-            );
-        } elseif (($skill['type'] ?? '') === 'buff') {
-            $power = $skill['power'] ?? 0;
-        } elseif (($skill['type'] ?? '') === 'heal') {
-            $power = $this->calculateDamage(
-                $skill['power'] ?? 0,
-                $casterStats,
-                'magical',
-                $skill['level'] ?? 1
-            );
-        } else {
-            // fallback neutro
-            $power = $skill['power'] ?? 0;
-        }
 
-        // recupera propriedades de stack do $skill (se existirem no model/array)
-        $stackable = !empty($skill['stackable']) ? '1' : '0';
-        $maxStacks = isset($skill['max_stacks']) ? (int)$skill['max_stacks'] : 1;
-        $stackBehavior = $skill['stack_behavior'] ?? 'refresh';
 
-        // ==== EXEC LUA COM RETRY + LOGGING ====
-        $maxAttempts = 1;
-        $attempt = 0;
-        $evalResult = null;
-        $lastException = null;
-        $phpEvalElapsedMs = null;
 
-        // Extraia os efeitos adicionais
-        $addEffects = $skill['add_effects'] ?? [];
+        $targetTypeNormalized = ($targetType ?? 'character') === 'monster' ? 'monster' : 'character';
 
-        while ($attempt < $maxAttempts) {
-            $attempt++;
-            $evalStart = microtime(true);
-            try {
-                $evalResult = Redis::evalsha(
-                    $luaScript,
-                    1,
-                    $redisKey,
-                    $skill['type'] ?? '',
-                    $casterId,
-                    $target['instanceId'],
-                    $power,
-                    $skill['stat'] ?? '',
-                    $skill['duration'],
-                    $skill['level'],
-                    $casterType,
-                    $skill['tick_skill_id'] ?? null,
-                    $skill['tick_interval'] ?? null,
-                    $battleId,          // ARGV[11]
-                    $stackable,         // ARGV[12]
-                    $maxStacks,         // ARGV[13]
-                    $stackBehavior,     // ARGV[14]
-                    $skill['lock_time'] ?? null, // ARGV[15]
-                    $skill['id'], //ARGV[16]
-                    json_encode($addEffects), //ARGV[17]
-                );
-                $phpEvalElapsedMs = (microtime(true) - $evalStart) * 1000.0;
-                Log::alert("[SkillService][LuaEval] attempt={$attempt} php_eval_ms=" . round($phpEvalElapsedMs, 2) . " redis_key={$redisKey} caster={$casterType}:{$casterId} target={$target['instanceId']} skill={$skillId}");
+        // caster e target devem ser arrays com 'instanceId' e 'stats' (SkillService já tem estes)
+        $casterEntity = [
+            'instanceId' => (string)$casterId,
+            'stats' => $caster['stats'] ?? $caster['stats'] ?? []
+        ];
 
-                if ($evalResult) {
-                    break;
-                }
-            } catch (\Exception $e) {
-                $phpEvalElapsedMs = (microtime(true) - $evalStart) * 1000.0;
-                $lastException = $e;
-                Log::warning("[SkillService][LuaEval] attempt={$attempt} failed php_eval_ms=" . round($phpEvalElapsedMs, 2) . " error=" . $e->getMessage());
-                // backoff curto (5ms, 10ms, 20ms)
-                usleep(5000 * $attempt);
-            }
-        }
+        $targetEntity = $target; // assume já tem 'instanceId' e 'stats' (se não, busque via Redis similar ao antigo)
 
-        if (!$evalResult) {
-            $msg = "Lua script failed after {$maxAttempts} attempts";
-            if ($lastException) {
-                $msg .= ": " . $lastException->getMessage();
-            }
-            throw new \RuntimeException($msg);
-        }
+        // Opcional: passe add_effects ou parentSkillId via options
+        $options = [
+            'lock_time' => $skill['lock_time'] ?? null,
+            'parentSkillId' => $skill['id'] ?? null,
+            'addEffects' => $skill['add_effects'] ?? []
+        ];
 
-        // parse result
-        $result = json_decode($evalResult, true);
-        if ($result === null) {
-            throw new \RuntimeException("Invalid JSON from Lua script: " . substr((string)$evalResult, 0, 300));
-        }
-
-        // prefer exec_time_ms retornado pelo Lua, se presente
-        $luaExecMs = isset($result['exec_time_ms']) ? (float)$result['exec_time_ms'] : null;
-        if ($luaExecMs !== null) {
-            Log::info("[SkillService][LuaTiming] lua_exec_ms=" . round($luaExecMs, 2) . " php_eval_ms=" . round($phpEvalElapsedMs, 2));
-        } else {
-            Log::info("[SkillService][LuaTiming] no lua_exec_ms returned php_eval_ms=" . round($phpEvalElapsedMs, 2));
-        }
-
-        if (isset($result['error'])) {
-            throw new \RuntimeException($result['error']);
-        }
+        $start = microtime(true);
+        $result = $this->processor->processSkill($skill, $casterEntity, $targetEntity, $battleId, $casterType, $targetTypeNormalized, $options);
+        $elapsed = (microtime(true) - $start) * 1000.0;
+        Log::info("[SkillService][PHPProcessor] php_exec_ms=" . round($elapsed, 2) . " battle={$battleId} caster={$casterType}:{$casterId} target={$target['instanceId']} skill={$skillId}");
 
         // Caso o script não tenha retornado current_hp, leia do hpKey (fonte da verdade)
         $targetHp = null;
@@ -305,15 +220,6 @@ class SkillService
             $usedStaminaTotal = isset($stParsed['used_stamina_total']) ? (float)$stParsed['used_stamina_total'] : null;
         }
 
-        // logs adicionais em caso de script lento
-        $slowThresholdMs = 200.0; // ajuste conforme seu ambiente
-        if ($luaExecMs !== null && $luaExecMs > $slowThresholdMs) {
-            Log::warning("[SkillService][LuaSlow] lua_exec_ms=" . round($luaExecMs, 2) . " php_eval_ms=" . round($phpEvalElapsedMs, 2) . " target={$target['instanceId']} battle={$battleId} skill={$skillId}");
-        } elseif ($phpEvalElapsedMs !== null && $phpEvalElapsedMs > ($slowThresholdMs * 2)) {
-            // PHP-side long eval (possivelmente retry or network)
-            Log::warning("[SkillService][LuaSlowPHP] php_eval_ms=" . round($phpEvalElapsedMs, 2) . " (lua_exec_ms=" . ($luaExecMs ?? 'n/a') . ")");
-        }
-
         return [
             'battle_id' => $battleId,
             'caster_id' => $casterId,
@@ -332,9 +238,7 @@ class SkillService
             'debuff_chance' => $result['debuff_chance'] ?? null,
             'debuff_roll' => $result['debuff_roll'] ?? null,
             'debuff_failed' => $result['debuff_failed'] ?? null,
-            // opcional: repassar timings para o caller se quiser
-            'lua_exec_ms' => $luaExecMs,
-            'php_eval_ms' => $phpEvalElapsedMs,
+
         ];
     }
 

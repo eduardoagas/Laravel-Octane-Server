@@ -611,7 +611,6 @@ class BattleManager extends BattleManagerHelpers
                 continue;
             }
             $monsterCurrentStamina = StaminaService::getCurrentStamina($battleId, (string)$monsterKey, 'monster');
-            $monster['current_stamina'] = $monsterCurrentStamina;
 
             Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) current stamina: $monsterCurrentStamina");
 
@@ -655,7 +654,7 @@ class BattleManager extends BattleManagerHelpers
                 'players' => $players,
                 'battle_id' => $battleId,
                 'skills' => $monsterSkills, // <-- aqui
-            ]);
+            ], $monsterCurrentStamina);
 
             if (!$action) {
                 Log::info("[processBattleMonsters] Monster {$monster['name']} ({$monsterKey}) não realizou nenhuma ação");
