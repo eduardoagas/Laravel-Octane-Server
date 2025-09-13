@@ -10,9 +10,17 @@ use App\Services\Battle\StaminaService;
 use App\Services\Battle\BattleBroadcaster;
 use App\Battle\BattleManagerHelpers;
 use App\Battle\BattleActions as BattleBattleActions;
+use App\Services\Battle\BattleSkillProcessor;
 
 class BattleManager extends BattleManagerHelpers
 {
+
+    private BattleSkillProcessor $processor;
+
+    public function __construct()
+    {
+        $this->processor = new BattleSkillProcessor();
+    }
 
     public function processBattlePendingSkills(string $battleId): bool
     {
@@ -320,15 +328,37 @@ class BattleManager extends BattleManagerHelpers
                                 'targetId' => $targetId,
                             ]);
 
-                            $someoneDied = \App\Battle\BattleActions::executeAction(
+                            $pseudoSkill = $this->makeTickPseudoSkill($field);
+
+                            $result = $this->processor->processSkill(
+                                $pseudoSkill,
                                 $resolvedCaster,
-                                $skillId,
-                                null,
                                 $targetRef,
                                 $battleId,
-                                $resolvedCaster['type'],
-                                $targets['category']
+                                $resolvedCaster['type'] ?? $entityType,
+                                $targets['category'] ?? $entityType,
+                                [
+                                    'lock_time' => $lockTime ?? 0,
+                                    'parentSkillId' => $skillId,
+                                    'addEffects' => $pseudoSkill['add_effects'] ?? [],
+                                ]
                             );
+
+                            // Caso o script não tenha retornado current_hp, leia do hpKey (fonte da verdade)
+                            $targetHp = null;
+                            if (isset($result['current_hp'])) {
+                                $targetHp = (int)$result['current_hp'];
+                            } else {
+                                // hpKey padronizado: targetKey + ":" + targetId + ":hp"
+                                $hpKey = "battle:{$battleId}:{$targetKey}:" .  $targets['category'] ?? $entityType . ":hp";
+                                $hpRaw = Redis::get($hpKey);
+                                if ($hpRaw !== null) {
+                                    $targetHp = (int)$hpRaw;
+                                }
+                            }
+
+
+                            $someoneDied = $result['someone_died'] ?? false;
 
                             $freshJson = Redis::hget("battle:$battleId:$targetKey", $targetId);
                             if ($freshJson) {
