@@ -6,7 +6,7 @@ use Illuminate\Support\Facades\Log;
 
 class GoblinBehavior implements MonsterBehaviorInterface
 {
-    public function decideAction(array $monsterData, array $battleState, int $currentStamina): ?array
+    public function decideAction(array $monsterData, array $battleState, float $currentStamina): ?array
     {
         $stamina = $currentStamina ?? 0;
 

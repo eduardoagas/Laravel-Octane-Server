@@ -10,5 +10,5 @@ interface MonsterBehaviorInterface {
      * @param array $battleState Estado atual da batalha (monstros, jogadores, etc)
      * @return string|null Retorna o nome da ação ou null para "esperar"
      */
-    public function decideAction(array $monsterData, array $battleState, int $currentStamina): ?array;
+    public function decideAction(array $monsterData, array $battleState, float $currentStamina): ?array;
 }

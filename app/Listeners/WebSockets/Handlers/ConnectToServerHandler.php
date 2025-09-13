@@ -59,14 +59,27 @@ class ConnectToServerHandler implements HandlesUnityEvent
             'stats'   => json_encode($character->stats ? $character->stats->toArray() : [], JSON_UNESCAPED_UNICODE),
         ]);
 
-        // --- Agora podemos montar o payload 'subscribeMe' para Unity ---
+        // --- SALVA OU ATUALIZA registros WORLD SEMPRE ---
+        $helpers = new CharacterHelpers();
+        $helpers->applyVitStatsToCharacter($character);
+        $helpers->applyWisdomStatsToCharacter($character);
+
+        // --- Se já tiver inventário, apenas atualiza; se não, cria ---
+        
+            // --- Inventários ---
+        $characterSoulInventory = $character->soulInventory()->create();
+        $characterSoulGridInventory = $character->soulGridInventory()->create();
+        $consumablesInventory = $character->consumablesInventory ?? $character->consumablesInventory()->create();
+        $battlePack = $character->battlePack ?? $character->battlePack()->create(['max_slots' => 4]);
+        $helpers->setupConsumables($consumablesInventory, $battlePack, $character);
+        $helpers->setupSkillsAndSouls($character);
+
+        // --- Monta payload 'subscribeMe' para Unity ---
         $characterPayload = [
             'id'    => $character->id,
             'name'  => $character->name,
-            //'stats' => $character->stats ? $character->stats->toArray() : [],
         ];
 
-        // Monta payload final
         $payloadToSend = [
             'event' => 'subscribeMe',
             'data'  => [
@@ -75,10 +88,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
             ],
         ];
 
-        // Log útil antes de enviar
         Log::debug('WS OUT (subscribeMe)', $payloadToSend);
-
-        // Envia para o cliente Unity
         $connection->send(json_encode($payloadToSend, JSON_UNESCAPED_UNICODE));
 
         Log::info("Conexão inicial completa: subscribeMe enviado", ['character_id' => $character->id]);
@@ -106,20 +116,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
                 'wisdom' => 2, //2
             ]);
 
-            // --- Inventários ---
-            $character->soulInventory()->create();
-            $character->soulGridInventory()->create();
-            $consumablesInventory = $character->consumablesInventory()->create();
-            $battlePack = $character->battlePack()->create(['max_slots' => 4]);
 
-            // --- Helpers ---
-            $helpers = new CharacterHelpers();
-            $helpers->setupConsumables($consumablesInventory, $battlePack, $character);
-            $helpers->setupSkillsAndSouls($character);
-
-            // --- Aplica stats derivados de Vitality ---
-            $helpers->applyVitStatsToCharacter($character);
-            $helpers->applyWisdomStatsToCharacter($character);
             return $character;
         });
     }

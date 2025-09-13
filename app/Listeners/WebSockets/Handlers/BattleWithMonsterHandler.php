@@ -22,8 +22,6 @@ class BattleWithMonsterHandler
     public function handle(array $payload, int $userId, string $token, Connection $connection): void
     {
 
-        // 3️⃣ Criar ID único para a batalha
-        $battleId = uniqid('battle_', true);
         // 1️⃣ Busca os dados da sessão pelo token
         $sessionData = Redis::hgetall("session:$token");
         $characterId = isset($sessionData['character_id']) ? (int)$sessionData['character_id'] : null;
@@ -36,6 +34,9 @@ class BattleWithMonsterHandler
 
         // 3️⃣ Criar ID único para a batalha
         $battleId = uniqid('battle_', true);
+
+        // Vincular battle_instance_id na sessão
+        Redis::hset("session:$token", 'battle_instance_id', $battleId);
 
         // === Carrega todos os jogadores que iniciam / entram na batalha ===
         // para agora: só o criador; futuramente passe um array com vários character ids
@@ -183,6 +184,13 @@ class BattleWithMonsterHandler
 
             // Mapeamento instanceId -> characterId
             Redis::hset("battle:$battleId:instance_map", (string)$playerInstanceId, $characterId);
+
+            Log::info("Instance map updated", [
+                'battle' => $battleId,
+                'instance_id' => $playerInstanceId,
+                'character_id' => $characterId
+            ]);
+
 
             // Inicializar stamina (salva em battle:<id>:stamina_data character:<instance>)
             $characterStaminaData = $this->staminaService->initializeStamina(

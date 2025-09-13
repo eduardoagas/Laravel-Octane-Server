@@ -6,7 +6,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use App\Exceptions\SkillCooldownException;
 use App\Exceptions\InsufficientStaminaException;
-use App\Helpers\Battle\BattleSkillProcessor;
+use App\Services\Battle\BattleSkillProcessor;
 
 class SkillService
 {
@@ -128,7 +128,7 @@ class SkillService
         $casterStats = $caster['stats'] ?? [];
         if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
 
-        // aplica buffs/debuffs ativos do caster
+        // aplica buffs/debuffs ativos do caster (Desnecessário?)
         $casterStats = $this->applyCasterBuffs($battleId, $casterType, $casterId, $casterStats);
 
         if (is_string($casterStats)) $casterStats = json_decode($casterStats, true);
@@ -195,7 +195,7 @@ class SkillService
         $start = microtime(true);
         $result = $this->processor->processSkill($skill, $casterEntity, $targetEntity, $battleId, $casterType, $targetTypeNormalized, $options);
         $elapsed = (microtime(true) - $start) * 1000.0;
-        Log::info("[SkillService][PHPProcessor] php_exec_ms=" . round($elapsed, 2) . " battle={$battleId} caster={$casterType}:{$casterId} target={$target['instanceId']} skill={$skillId}");
+        //Log::info("[SkillService][PHPProcessor] php_exec_ms=" . round($elapsed, 2) . " battle={$battleId} caster={$casterType}:{$casterId} target={$target['instanceId']} skill={$skillId}");
 
         // Caso o script não tenha retornado current_hp, leia do hpKey (fonte da verdade)
         $targetHp = null;
@@ -336,48 +336,6 @@ class SkillService
         }
     }
 
-
-
-    /**
-     * Calcula damage per hit (power) --- NÃO usa DEX.
-     *
-     * Parâmetros calibrados que reproduzem a última tabela:
-     *  - exponent = 0.45
-     *  - dmgBoost = 1.25
-     *
-     * signature preservada: calculateDamage($skillPower, $casterStats, $skillType, $skillLevel)
-     */
-    private function calculateDamage(float $skillPower, array $casterStats, string $skillType = 'physical', int $skillLevel = 1): float
-    {
-        // parâmetros calibrados (ajuste se quiser)
-        $dmgBoost = 1.25;    // boost geral (mantido das últimas tabelas)
-        $exponent = 0.45;    // expoente que controla escala por STR/INT
-
-        // skill multipliers (mantive valores razoáveis)
-        $multipliers = [
-            'weak' => 0.9,
-            'medium' => 1.0,
-            'strong' => 1.6,
-        ];
-        $strengthMapping = [1 => 'weak', 2 => 'medium', 3 => 'strong'];
-
-        // atributo principal (STR para físico, INT para mágico)
-        $mainAttr = ($skillType === 'physical') ? 'strength' : 'intelligence';
-        $attrValue = (float)($casterStats[$mainAttr] ?? 0.0);
-
-        // base
-        $base = $skillPower + $attrValue;
-        $strength = $strengthMapping[$skillLevel] ?? 'medium';
-        $mult = $multipliers[$strength] ?? 1.0;
-
-        // escala exponencial suave (sem DEX)
-        // attrScale = (1.02 ^ attr) ^ exponent
-        $attrScale = pow(pow(1.03, 1 + $attrValue), $exponent);
-
-        $damage = $base * $mult * $attrScale * $dmgBoost;
-
-        return round($damage, 6);
-    }
 
 
     /**

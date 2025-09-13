@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Helpers\Battle;
+namespace App\Services\Battle;
 
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Log;
@@ -132,7 +132,7 @@ class BattleSkillProcessor
             $currentHpShadow = intval($stats['current_hp'] ?? 0);
             if ($currentHpShadow > 0) {
                 $healPower = $this->computeBaseDamage($power, $casterStats, $skillType, $level, $skill);
-                $potResHealPower = $this->calcEffectiveHeal($power, $casterStats, $stats);
+                $potResHealPower = $this->calcEffectiveHeal($healPower, $casterStats, $stats);
                 $effectiveHeal = min($potResHealPower, $maxHp - $currentHpShadow);
                 if ($effectiveHeal > 0) {
                     [$newHp, $oldHp] = $this->applyHpDelta($battleId, $targetType, $targetId, $effectiveHeal, $stats);
@@ -185,6 +185,10 @@ class BattleSkillProcessor
         $t2 = microtime(true);
         $result['exec_time_ms'] = intval(($t2 - $tStart) * 1000);
 
+        
+        $entity['stats']['current_hp'] = intval($stats['current_hp'] ?? 0);
+        Redis::hset($targetHashKey, $targetId, json_encode($entity, JSON_UNESCAPED_UNICODE));
+        
         return $result;
     }
 
