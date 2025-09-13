@@ -1032,44 +1032,4 @@ class BattleManagerHelpers
 
         Log::info("Battle $battleId finalized and all Redis keys removed.");
     }
-
-    /**
-     * Cria uma pseudo-skill de tick baseada no nome da field
-     *
-     * @param string $fieldName ex: "poison", "bleed"
-     * @param int $casterLevel nível do caster (opcional, para escalar power)
-     * @return array
-     */
-    protected function makeTickPseudoSkill(string $fieldName, int $level = 1): array
-    {
-        // Map de tipos de efeito para tipo de skill
-        $typeMap = [
-            'poison' => 'physicalPurePercentageDamage',
-            'bleed'  => 'physicalPurePercentageDamage',
-            'burn'   => 'magicalPurePercentageDamage',
-        ];
-
-        $basePowerMap = [
-            'poison' => 6.25,
-            'bleed'  => 5.0,
-            'burn'   => 7.0,
-        ];
-
-        $skillType = $typeMap[$fieldName] ?? 'physicalPurePercentageDamage';
-        $power     = $basePowerMap[$fieldName]; 
-
-        return [
-            'id'              => 0, // 0 indica pseudo-skill temporária
-            'name'            => ucfirst($fieldName) . ' Tick',
-            'type'            => $skillType,
-            'power'           => $power,
-            'duration'        => 1,
-            'stamina_cost'    => 0,
-            'pre_delay'       => 0,
-            'post_delay'      => 0,
-            'level'           => $level,
-            'tick_skill_flag' => true,
-            'field_name'      => $fieldName, // opcional, para rastrear
-        ];
-    }
 }
