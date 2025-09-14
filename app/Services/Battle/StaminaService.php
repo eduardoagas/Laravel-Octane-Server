@@ -10,19 +10,73 @@ class StaminaService
     /**
      * Inicializa os dados de stamina de um personagem
      */
-    public function initializeStamina(int $now, float $maxStamina, float $dexterity): array
-    {
-        return [
+    /**
+     * Inicializa os dados de stamina de um personagem
+     *
+     * Agora aceita opcionalmente $battleId e $field para gerar e salvar
+     * o regen profile no Redis imediatamente.
+     *
+     * @param int $now
+     * @param float $maxStamina
+     * @param float $dexterity
+     * @param string|null $battleId  ex: 'battle:abc' (apenas o id sem prefixo é ok também)
+     * @param string|null $field     ex: "character:3" ou "monster:1"
+     * @param int $step              passo para LUT (default 5)
+     * @return array
+     */
+    public function initializeStamina(
+        int $now,
+        float $maxStamina,
+        float $dexterity,
+        ?string $battleId = null,
+        ?string $field = null,
+        int $step = 5
+    ): array {
+        $data = [
             'start_time' => $now,
             'initial_stamina' => 0.0,
             'max_stamina' => $maxStamina,
             'dexterity' => $dexterity,
             'used_stamina_total' => 0.0,
+            // campos da regen diretamente
+            'base_regen' => 0.0,
+            'step' => $step,
+            'lut' => [],
         ];
+
+        // Se battleId e field foram informados, gera e salva o profile
+        if (!empty($battleId) && !empty($field)) {
+            try {
+                $regenProfile = $this->buildRegenProfile($maxStamina, $dexterity, $step);
+
+                // chave: battle:<id>:stamina_profile
+                $profileKey = "battle:{$battleId}:stamina_profile";
+                Redis::hset($profileKey, $field, json_encode($regenProfile, JSON_UNESCAPED_UNICODE));
+
+                // atribui diretamente no array
+                $data['base_regen'] = $regenProfile['base_regen'] ?? 0.0;
+                $data['step'] = $regenProfile['step'] ?? $step;
+                $data['lut'] = $regenProfile['lut'] ?? [];
+            } catch (\Throwable $e) {
+                Log::warning("[initializeStamina] Failed to build/save regen profile", [
+                    'battle' => $battleId,
+                    'field' => $field,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return $data;
     }
+
+
 
     /**
      * Retorna a stamina atual (após regeneração) para um caster (character|monster).
+     *
+     * Prioridade:
+     * 1) tenta usar profile salvo em Redis (battle:<battleId>:stamina_profile field {type}:{id})
+     * 2) se não existir profile válido, usa computeRegenState() como fallback
      *
      * @param string $battleId
      * @param string $id instanceId
@@ -31,17 +85,116 @@ class StaminaService
      */
     public static function getCurrentStamina(string $battleId, string $id, string $type = 'character'): float
     {
-        $key = "battle:{$battleId}:stamina_data";
+        $dataKey = "battle:{$battleId}:stamina_data";
         $field = "{$type}:{$id}";
-        $data = Redis::hget($key, $field);
+        $raw = Redis::hget($dataKey, $field);
 
-        if (!$data) return 0.0;
+        if (!$raw) {
+            return 0.0;
+        }
 
-        $parsed = json_decode($data, true) ?: [];
-
+        $parsed = json_decode($raw, true) ?: [];
         $nowTs = now()->timestamp;
-        $state = self::computeRegenState($parsed, $nowTs);
 
+        // current before regen
+        $initial = (float) ($parsed['initial_stamina'] ?? 0.0);
+        $used = (float) ($parsed['used_stamina_total'] ?? 0.0);
+        $sMaxFromParsed = (float) ($parsed['max_stamina'] ?? 0.0);
+        $currentBefore = max(0.0, $initial - $used);
+
+        // Try to read regen profile from Redis
+        try {
+            $profileKey = "battle:{$battleId}:stamina_profile";
+            $profileRaw = Redis::hget($profileKey, $field);
+
+            if ($profileRaw) {
+                $profile = json_decode($profileRaw, true);
+                if (is_array($profile) && !empty($profile['lut']) && is_array($profile['lut'])) {
+                    // use profile
+                    $elapsed = max(0, $nowTs - (int)($parsed['start_time'] ?? 0));
+
+                    // base_regen prefer profile value, otherwise recompute using same constants as buildRegenProfile
+                    if (isset($profile['base_regen'])) {
+                        $baseRegen = (float) $profile['base_regen'];
+                    } else {
+                        // recompute baseRegen (mirror of buildRegenProfile formula)
+                        $minRate = 3.6;
+                        $maxRate = 20.0;
+                        $maxDex = 300.0;
+                        $alpha = 0.4;
+                        $dex = max(1.0, (float) ($parsed['dexterity'] ?? 1.0));
+                        $agiFactor = pow(min($dex / $maxDex, 1.0), $alpha);
+                        $baseRegen = $minRate + ($maxRate - $minRate) * $agiFactor;
+                    }
+
+                    $lut = $profile['lut'];
+                    // ensure lut sorted by stamina (ascending)
+                    usort($lut, function ($a, $b) {
+                        return ($a['stamina'] <=> $b['stamina']);
+                    });
+
+                    // find bounding entries for currentBefore
+                    $count = count($lut);
+                    if ($count === 0) {
+                        // fallback
+                        $state = self::computeRegenState($parsed, $nowTs);
+                        return (float) ($state['current_after_regen'] ?? 0.0);
+                    }
+
+                    // If currentBefore is below first entry or above last entry, clamp
+                    $first = $lut[0];
+                    $last = $lut[$count - 1];
+
+                    if ($currentBefore <= (float)$first['stamina']) {
+                        $mult = (float)$first['mult'];
+                    } elseif ($currentBefore >= (float)$last['stamina']) {
+                        $mult = (float)$last['mult'];
+                    } else {
+                        // find k where lut[k]['stamina'] >= currentBefore
+                        $k = 0;
+                        for ($i = 0; $i < $count; $i++) {
+                            if ((float)$lut[$i]['stamina'] >= $currentBefore) {
+                                $k = $i;
+                                break;
+                            }
+                        }
+                        // ensure k>0 (we already handled <= first)
+                        if ($k <= 0) {
+                            $mult = (float)$lut[0]['mult'];
+                        } else {
+                            $lo = $lut[$k - 1];
+                            $hi = $lut[$k];
+                            $sLo = (float)$lo['stamina'];
+                            $sHi = (float)$hi['stamina'];
+                            $mLo = (float)$lo['mult'];
+                            $mHi = (float)$hi['mult'];
+
+                            // avoid division by zero
+                            if ($sHi <= $sLo) {
+                                $mult = $mLo;
+                            } else {
+                                $t = ($currentBefore - $sLo) / ($sHi - $sLo);
+                                $mult = $mLo + ($mHi - $mLo) * $t;
+                            }
+                        }
+                    }
+
+                    $recovered = $elapsed * $baseRegen * (float)$mult;
+                    $currentAfter = min($sMaxFromParsed, $currentBefore + $recovered);
+
+                    return (float)$currentAfter;
+                }
+            }
+        } catch (\Throwable $e) {
+            // se algo deu errado ao ler/decodificar profile, log e fallback para computeRegenState
+            Log::warning("[StaminaService@getCurrentStamina] Failed to use regen profile, falling back. Error: " . $e->getMessage(), [
+                'battle' => $battleId,
+                'field' => $field
+            ]);
+        }
+
+        // fallback: usar computeRegenState (comportamento anterior)
+        $state = self::computeRegenState($parsed, $nowTs);
         return (float) ($state['current_after_regen'] ?? 0.0);
     }
 
@@ -54,14 +207,26 @@ class StaminaService
      * @param string $type 'character'|'monster'
      * @return array|null Retorna array similar ao Lua (['used'=>..., 'current_after'=>..., ...]) ou null se insuficiente / erro
      */
+    /**
+     * Consome ou recupera stamina (substitui o script Lua).
+     *
+     * Agora prefere usar o profile salvo em Redis (battle:<battleId>:stamina_profile field {type}:{id})
+     * para calcular currentAfterRegen via LUT + interpola. Se não houver profile válido, usa computeRegenState().
+     *
+     * @param string $battleId
+     * @param string $id instanceId do caster
+     * @param float $amount >0 consome, 0 compacta, <0 recupera
+     * @param string $type 'character'|'monster'
+     * @return array|null Retorna array similar ao Lua (['used'=>..., 'current_after'=>..., ...]) ou null se insuficiente / erro
+     */
     public static function consumeStamina(string $battleId, string $id, float $amount, string $type = 'character'): ?array
     {
-        $key = "battle:{$battleId}:stamina_data";
+        $dataKey = "battle:{$battleId}:stamina_data";
         $field = "{$type}:{$id}";
         $nowTs = now()->timestamp;
 
         // Ler estado existente
-        $raw = Redis::hget($key, $field);
+        $raw = Redis::hget($dataKey, $field);
         if (!$raw) {
             // comportamento compatível: sem dados -> null
             return null;
@@ -69,19 +234,105 @@ class StaminaService
 
         $parsed = json_decode($raw, true) ?: [];
 
-        // calcula estado regenerado
-        $state = self::computeRegenState($parsed, $nowTs);
-        $currentAfterRegen = (float) ($state['current_after_regen'] ?? 0.0);
+        // valores básicos
+        $initial = (float) ($parsed['initial_stamina'] ?? 0.0);
         $used = (float) ($parsed['used_stamina_total'] ?? 0.0);
+        $sMax = (float) ($parsed['max_stamina'] ?? 0.0);
+        $currentBefore = max(0.0, $initial - $used);
+
+        // Tentativa de usar profile do Redis para calcular currentAfterRegen
+        $currentAfterRegen = null;
+        try {
+            $profileKey = "battle:{$battleId}:stamina_profile";
+            $profileRaw = Redis::hget($profileKey, $field);
+
+            if ($profileRaw) {
+                $profile = json_decode($profileRaw, true);
+                if (is_array($profile) && !empty($profile['lut']) && is_array($profile['lut'])) {
+                    $elapsed = max(0, $nowTs - (int)($parsed['start_time'] ?? 0));
+
+                    // base_regen prefer profile value, caso contrário recomputa
+                    if (isset($profile['base_regen'])) {
+                        $baseRegen = (float) $profile['base_regen'];
+                    } else {
+                        $minRate = 3.6;
+                        $maxRate = 20.0;
+                        $maxDex = 300.0;
+                        $alpha = 0.4;
+                        $dex = max(1.0, (float) ($parsed['dexterity'] ?? 1.0));
+                        $agiFactor = pow(min($dex / $maxDex, 1.0), $alpha);
+                        $baseRegen = $minRate + ($maxRate - $minRate) * $agiFactor;
+                    }
+
+                    $lut = $profile['lut'];
+                    usort($lut, function ($a, $b) {
+                        return ($a['stamina'] <=> $b['stamina']);
+                    });
+
+                    $count = count($lut);
+                    if ($count > 0) {
+                        $first = $lut[0];
+                        $last = $lut[$count - 1];
+
+                        if ($currentBefore <= (float)$first['stamina']) {
+                            $mult = (float)$first['mult'];
+                        } elseif ($currentBefore >= (float)$last['stamina']) {
+                            $mult = (float)$last['mult'];
+                        } else {
+                            // encontra índice k tal que lut[k].stamina >= currentBefore
+                            $k = 0;
+                            for ($i = 0; $i < $count; $i++) {
+                                if ((float)$lut[$i]['stamina'] >= $currentBefore) {
+                                    $k = $i;
+                                    break;
+                                }
+                            }
+                            if ($k <= 0) {
+                                $mult = (float)$lut[0]['mult'];
+                            } else {
+                                $lo = $lut[$k - 1];
+                                $hi = $lut[$k];
+                                $sLo = (float)$lo['stamina'];
+                                $sHi = (float)$hi['stamina'];
+                                $mLo = (float)$lo['mult'];
+                                $mHi = (float)$hi['mult'];
+
+                                if ($sHi <= $sLo) {
+                                    $mult = $mLo;
+                                } else {
+                                    $t = ($currentBefore - $sLo) / ($sHi - $sLo);
+                                    $mult = $mLo + ($mHi - $mLo) * $t;
+                                }
+                            }
+                        }
+
+                        $recovered = $elapsed * $baseRegen * (float)$mult;
+                        $currentAfterRegen = min($sMax, $currentBefore + $recovered);
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            // log e deixamos currentAfterRegen = null para cair no fallback
+            Log::warning("[StaminaService@consumeStamina] regen profile read failed, fallback. Error: " . $e->getMessage(), [
+                'battle' => $battleId,
+                'field' => $field
+            ]);
+        }
+
+        // Fallback: se profile não foi usado/produziu valor, use computeRegenState
+        if ($currentAfterRegen === null) {
+            $state = self::computeRegenState($parsed, $nowTs);
+            $currentAfterRegen = (float) ($state['current_after_regen'] ?? 0.0);
+        }
 
         // RECUPERAÇÃO (amount < 0)
         if ($amount < 0.0) {
             $recoverAmount = -$amount;
-            $new_current = min((float)($parsed['max_stamina'] ?? 0.0), $currentAfterRegen + $recoverAmount);
+            $new_current = min($sMax, $currentAfterRegen + $recoverAmount);
             $parsed['initial_stamina'] = $new_current;
             $parsed['start_time'] = $nowTs;
             $parsed['used_stamina_total'] = 0.0;
-            Redis::hset($key, $field, json_encode($parsed, JSON_UNESCAPED_UNICODE));
+            Redis::hset($dataKey, $field, json_encode($parsed, JSON_UNESCAPED_UNICODE));
 
             return [
                 'used' => $used,
@@ -96,7 +347,7 @@ class StaminaService
             $parsed['initial_stamina'] = $currentAfterRegen;
             $parsed['start_time'] = $nowTs;
             $parsed['used_stamina_total'] = 0.0;
-            Redis::hset($key, $field, json_encode($parsed, JSON_UNESCAPED_UNICODE));
+            Redis::hset($dataKey, $field, json_encode($parsed, JSON_UNESCAPED_UNICODE));
 
             return [
                 'used' => $used,
@@ -118,13 +369,14 @@ class StaminaService
         $parsed['initial_stamina'] = $current_after;
         $parsed['start_time'] = $nowTs;
         $parsed['used_stamina_total'] = 0.0;
-        Redis::hset($key, $field, json_encode($parsed, JSON_UNESCAPED_UNICODE));
+        Redis::hset($dataKey, $field, json_encode($parsed, JSON_UNESCAPED_UNICODE));
 
         return [
             'used' => $new_used,
             'current_after' => $current_after,
         ];
     }
+
 
     /**
      * Helper reutilizável que calcula o estado de regeneração.
@@ -231,7 +483,7 @@ class StaminaService
         $minRate = 3.6;
         $maxRate = 20.0;
         $maxDex = 300.0;
-        $alpha = 0.3;
+        $alpha = 0.4;
 
         // bandas (use as bandas que você já usa)
         $bands = [
@@ -261,11 +513,13 @@ class StaminaService
                     break;
                 }
             }
-            $lut[] = ['stamina' => round($cur, 2), 'mult' => (float)$bandMult];
+            $mults[] = (float)$bandMult;
+            // $lut[] = ['stamina' => round($cur, 2), 'mult' => (float)$bandMult];
         }
         // se o for terminou sem exatamente atingir maxS, garante entry final
-        $last = end($lut);
-        if (!$last || $last['stamina'] < $maxS) {
+        // garantir entrada final em maxStamina caso o loop não tenha incluído exato
+        if (empty($mults) || count($mults) === 0 || end($mults) !== (float)$bandMult) {
+            // pega bandMult para maxS
             $bandMult = 1.0;
             foreach ($bands as [$from, $to, $m]) {
                 $bTo = min($to, $maxS);
@@ -274,14 +528,14 @@ class StaminaService
                     break;
                 }
             }
-            $lut[] = ['stamina' => round($maxS, 2), 'mult' => (float)$bandMult];
+            $mults[] = (float)$bandMult;
         }
 
         return [
             'base_regen' => $baseRegen,
             'step' => $step,
             'max_stamina' => $maxS,
-            'lut' => $lut,
+            'lut' => $mults, // <- agora é array de floats
             'generated_at' => now()->timestamp,
         ];
     }

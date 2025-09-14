@@ -79,7 +79,11 @@ class BattleWithMonsterHandler
             // deltas
             $deltaHp = json_decode(Redis::get("battle:$battleId:character:{$pInstanceId}:delta_hp") ?? '{}', true);
             $deltaStamina = json_decode(Redis::get("battle:$battleId:character:{$pInstanceId}:delta_stamina") ?? '{}', true);
-
+            Log::debug('STAMINA OUT', [
+                'battle' => $battleId,
+                'field' => "character:{$pInstanceId}",
+                'CharacterStaminaData' => $staminaData,
+            ]);
             $playersPayload[] = [
                 'instanceId' => (string)$pInstanceId,
                 'currentHp' => (int)($charData['stats']['current_hp'] ?? ($charData['stats']['hp'] ?? 0)),
@@ -196,7 +200,10 @@ class BattleWithMonsterHandler
             $characterStaminaData = $this->staminaService->initializeStamina(
                 $now,
                 (int)($stats['stamina'] ?? 0),
-                (int)($stats['dexterity'] ?? 0)
+                (int)($stats['dexterity'] ?? 0),
+                $battleId,
+                "character:{$playerInstanceId}",
+                2 // step da LUT (ajuste se quiser)
             );
             Redis::hset("battle:$battleId:stamina_data", "character:{$playerInstanceId}", json_encode($characterStaminaData, JSON_UNESCAPED_UNICODE));
 
@@ -336,7 +343,10 @@ class BattleWithMonsterHandler
             $monsterStaminaData = $this->staminaService->initializeStamina(
                 $now,
                 (int)($monsterStats['stamina'] ?? 0),
-                (int)($monsterStats['dexterity'] ?? 0)
+                (int)($monsterStats['dexterity'] ?? 0),
+                $battleId,
+                "character:{$monsterInstanceId}",
+                1 // step da LUT (ajuste se quiser)
             );
             Redis::hset("battle:$battleId:stamina_data", "monster:{$monsterInstanceId}", json_encode($monsterStaminaData, JSON_UNESCAPED_UNICODE));
 
