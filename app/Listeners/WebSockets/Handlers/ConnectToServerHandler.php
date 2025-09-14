@@ -313,11 +313,11 @@ class CharacterHelpers
         $derived = $this->calculateDefenseFromVit($stats->level, $stats->vitality, $stats->intelligence);
 
         // Atualiza stats do personagem
-        $stats->base_hp = (int) round($derived['hp']);
+        $base_hp = (int) round($derived['hp']);
         $stats->physical_defense = (int) round($derived['physical_defense']);
         $stats->magical_defense = (int) round($derived['magical_defense']);
         // Recalcula HP total incluindo hp_bonus
-        $stats->hp = $stats->base_hp + ($stats->hp_bonus ?? 0);
+        $stats->hp = $base_hp + ($stats->hp_bonus ?? 0);
         $stats->save();
 
         // Atualiza Redis
