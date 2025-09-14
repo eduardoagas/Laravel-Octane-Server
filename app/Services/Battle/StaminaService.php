@@ -152,19 +152,18 @@ class StaminaService
         $dex = max(1.0, (float) ($parsed['dexterity'] ?? 1.0));
         $used = (float) ($parsed['used_stamina_total'] ?? 0.0);
 
-        // constantes (mesmas do lua)
+        // constantes
         $minRate = 3.6;
         $maxRate = 20.0;
         $maxDex = 300.0;
-        $alpha = 0.3;
+        $alpha = 0.4;
 
-        // bandas (mesmas do lua)
+        // bandas iguais ao antigo
         $bands = [
-            [0.0, 50.0, 1.0],
-            [50.0, 150.0, 1.2],
-            [150.0, 350.0, 1.4],
-            [350.0, 700.0, 1.8],
-            [700.0, PHP_FLOAT_MAX, 3.0],
+            [0.0, 150.0, 0.50],
+            [150.0, 350.0, 0.55],
+            [350.0, 700.0, 0.65],
+            [700.0, PHP_FLOAT_MAX, 0.7],
         ];
 
         $elapsed = max(0, $nowTs - $start_time);
@@ -172,28 +171,118 @@ class StaminaService
         $agiFactor = pow(min($dex / $maxDex, 1.0), $alpha);
         $baseRegen = $minRate + ($maxRate - $minRate) * $agiFactor;
 
-        $current = max(0.0, $initial - $used);
+        $remaining = (float) $elapsed;
+        $currentSim = max(0.0, $initial - $used);
+        $recovered = 0.0;
 
-        // multiplicador interpolado
-        $mult = 0.0;
-        foreach ($bands as [$from, $to, $bandMult]) {
-            if ($current >= $from && $current <= $to) {
-                $fraction = ($to - $from) > 0.0 ? (($current - $from) / ($to - $from)) : 0.0;
-                $mult = $bandMult * (0.4 + 0.6 * $fraction);
+        foreach ($bands as [$bFrom, $bTo, $bandMult]) {
+            if ($remaining <= 0.0 || $currentSim >= $sMax) break;
+
+            $bTo = min($bTo, $sMax);
+            if ($currentSim >= $bTo) continue;
+
+            $target = $bTo;
+            $rate = $baseRegen * $bandMult;
+            if ($rate <= 0.0) break;
+
+            $need = $target - $currentSim;
+            $timeToFill = $need / $rate;
+
+            if ($timeToFill <= $remaining) {
+                $recovered += $need;
+                $currentSim += $need;
+                $remaining -= $timeToFill;
+            } else {
+                $gain = $rate * $remaining;
+                $recovered += $gain;
+                $currentSim += $gain;
+                $remaining = 0.0;
                 break;
             }
         }
 
-        $recovered = $elapsed * $baseRegen * $mult;
-        $currentAfterRegen = min($sMax, $current + $recovered);
+        $currentAfterRegen = min($sMax, $currentSim);
 
         return [
             'elapsed' => $elapsed,
             'base_regen' => $baseRegen,
-            'mult' => $mult,
             'recovered' => $recovered,
-            'current_before' => $current,
+            'current_before' => max(0.0, $initial - $used),
             'current_after_regen' => $currentAfterRegen,
+        ];
+    }
+
+    /**
+     * Gera um perfil de regen (lookup table) para um personagem/monstro.
+     *
+     * @param float $maxStamina
+     * @param float $dex
+     * @param int $step passo da LUT (ex: 5 ou 10). Menor = mais precisão.
+     * @return array [
+     *   'base_regen' => float,
+     *   'step' => int,
+     *   'max_stamina' => float,
+     *   'lut' => [ ['stamina' => float, 'mult' => float], ... ]
+     * ]
+     */
+    public function buildRegenProfile(float $maxStamina, float $dex, int $step = 5): array
+    {
+        // constantes idênticas às usadas no computeRegenState
+        $minRate = 3.6;
+        $maxRate = 20.0;
+        $maxDex = 300.0;
+        $alpha = 0.3;
+
+        // bandas (use as bandas que você já usa)
+        $bands = [
+            [0.0, 50.0, 0.4],
+            [50.0, 150.0, 0.8],
+            [150.0, 350.0, 1.2],
+            [350.0, 700.0, 1.8],
+            [700.0, PHP_FLOAT_MAX, 3.0],
+        ];
+
+        $dex = max(1.0, (float)$dex);
+        $agiFactor = pow(min($dex / $maxDex, 1.0), $alpha);
+        $baseRegen = $minRate + ($maxRate - $minRate) * $agiFactor;
+
+        $lut = [];
+        $step = max(1, (int)$step);
+        $maxS = max(0.0, (float)$maxStamina);
+        // garantir que incluímos exatamente maxStamina no final
+        for ($s = 0.0; $s <= $maxS; $s += $step) {
+            $cur = $s;
+            // encontra banda aplicável
+            $bandMult = 1.0;
+            foreach ($bands as [$from, $to, $m]) {
+                $bTo = min($to, $maxS);
+                if ($cur >= $from && $cur <= $bTo) {
+                    $bandMult = $m;
+                    break;
+                }
+            }
+            $lut[] = ['stamina' => round($cur, 2), 'mult' => (float)$bandMult];
+        }
+        // se o for terminou sem exatamente atingir maxS, garante entry final
+        $last = end($lut);
+        if (!$last || $last['stamina'] < $maxS) {
+            $bandMult = 1.0;
+            foreach ($bands as [$from, $to, $m]) {
+                $bTo = min($to, $maxS);
+                if ($maxS >= $from && $maxS <= $bTo) {
+                    $bandMult = $m;
+                    break;
+                }
+            }
+            $lut[] = ['stamina' => round($maxS, 2), 'mult' => (float)$bandMult];
+        }
+
+        return [
+            'base_regen' => $baseRegen,
+            'step' => $step,
+            'max_stamina' => $maxS,
+            'lut' => $lut,
+            'generated_at' => now()->timestamp,
         ];
     }
 }
