@@ -16,24 +16,24 @@ return new class extends Migration
             $table->foreignId('monster_id')->nullable()->constrained()->cascadeOnDelete();
 
             // Inteiros (sem casas decimais) - default 1
-            $table->integer('hp')->default(100);
-            $table->integer('level')->default(1);
+            $table->integer('hp')->default(0);
+            $table->integer('level')->default(0);
 
 
             // Stamina - default 50
-            $table->double('stamina')->default(50);
-            $table->integer('strength')->default(1);
-            $table->integer('intelligence')->default(1);
-            $table->integer('vitality')->default(1);
-            $table->integer('dexterity')->default(1);
-            $table->integer('luck')->default(1);
-            $table->integer('wisdom')->default(1);
-            $table->integer('strength_bonus')->default(1);
-            $table->integer('intelligence_bonus')->default(1);
-            $table->integer('vitality_bonus')->default(1);
-            $table->integer('dexterity_bonus')->default(1);
-            $table->integer('luck_bonus')->default(1);
-            $table->integer('wisdom_bonus')->default(1);
+            $table->double('stamina')->default(0);
+            $table->integer('strength')->default(0);
+            $table->integer('intelligence')->default(0);
+            $table->integer('vitality')->default(0);
+            $table->integer('dexterity')->default(0);
+            $table->integer('luck')->default(0);
+            $table->integer('wisdom')->default(0);
+            $table->integer('strength_bonus')->default(0);
+            $table->integer('intelligence_bonus')->default(0);
+            $table->integer('vitality_bonus')->default(0);
+            $table->integer('dexterity_bonus')->default(0);
+            $table->integer('luck_bonus')->default(0);
+            $table->integer('wisdom_bonus')->default(0);
 
 
             // Restante - default 0

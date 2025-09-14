@@ -109,13 +109,15 @@ class ConnectToServerHandler implements HandlesUnityEvent
             // garante que só cria stats se ainda não tiver
             if (!$character->stats) {
                 $character->stats()->create([
-                    'hp'             => 100,
+                    'level' => 1,
                     'strength'       => 10,
                     'intelligence'   => 5,
                     'physical_defense'  => 3,
                     'magical_defense'   => 3,
                     'dexterity'      => 4,
                     'stamina'        => 10,
+                    'vitality'  => 1,
+                    'wisdom' => 1,
                 ]);
             }
 
@@ -242,7 +244,7 @@ class CharacterHelpers
      */
     public function calculateStamina(int $level, int $wisdom): int
     {
-        return (int) (25 + ($level * 1.2) + ((1 + $wisdom) * 2));
+        return (int) (25 + (($level == 0 ? 1 : $level) * 1.2) + ((1 + ($wisdom == 0 ? 1 : $wisdom)) * 2));
     }
 
     /**
@@ -311,7 +313,7 @@ class CharacterHelpers
         $derived = $this->calculateDefenseFromVit($stats->level, $stats->vitality, $stats->intelligence);
 
         // Atualiza stats do personagem
-        $stats->hp = (int) round($derived['hp']);
+        $stats->base_hp = (int) round($derived['hp']);
         $stats->physical_defense = (int) round($derived['physical_defense']);
         $stats->magical_defense = (int) round($derived['magical_defense']);
         // Recalcula HP total incluindo hp_bonus
@@ -417,7 +419,7 @@ class CharacterHelpers
 
         if (!$templateGrid->stats()->exists()) {
             $templateGrid->stats()->create([
-                'hp'              => 50,
+                'hp_bonus'              => 50,
                 'strength'        => 5,
                 'intelligence'    => 3,
                 'physical_defense' => 2,
