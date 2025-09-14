@@ -165,7 +165,7 @@ class CharacterHelpers
             'name' => 'Raise Defense',
             'type' => 'buff',
             'stat' => 'vitality_defense_bonus',
-            'power' => 5,
+            'power' => 200,
             'duration' => 8,
             'stamina_cost' => 10,
             'pre_delay' => 0,

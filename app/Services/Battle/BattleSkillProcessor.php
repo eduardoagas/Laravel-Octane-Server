@@ -254,18 +254,11 @@ class BattleSkillProcessor
         $newInt = intval($stats['intelligence'] ?? $stats['int'] ?? 0);
         $newVitDef = intval($stats['vitality_defense_bonus'] ?? $stats['vitDef'] ?? 0);
         $newIntDef = intval($stats['intelligence_magical_defense_bonus'] ?? $stats['intDef'] ?? 0);
-        if ($newVit !== $originalVit || $newInt !== $originalInt || $newVit ) {
+        if ($newVit !== $originalVit ||  $newVit) {
             $level = intval($stats['level'] ?? 1);
-            $intelligence = intval($stats['intelligence'] ?? $stats['int'] ?? 0);
-            $pdefbonus = $stats['physical_defense_bonus'];
-            $mdefbonus = $stats['magical_defense_bonus'];
-            $vitDef = $stats['vitality_defense_bonus'];
-            $intDef = $stats['intelligence_magical_defense_bonus'];
-            $defStats = $this->calculateDefenseFromVit($level, $newVit, $intelligence, $pdefbonus, $mdefbonus, $vitDef, $intDef);
+            $defStats = $this->calculateDefenseFromVit($level, $newVit);
 
             $stats['hp'] = $defStats['hp'];
-            $stats['physical_defense'] = $defStats['physical_defense'];
-            $stats['magical_defense'] = $defStats['magical_defense'];
         }
 
         // Recalcular stamina MAX se WIS mudou
@@ -350,18 +343,21 @@ class BattleSkillProcessor
 
 
 
-    protected function getDefense(array $st, string $skillType): float
+    protected function getDefense(array $stats, string $skillType): float
     {
-        $level = intval($st['level'] ?? 1);
-        $vit = max(1, intval($st['vitality'] ?? $st['vit'] ?? 1));
-        $intelligence = max(0, intval($st['intelligence'] ?? $st['int'] ?? 0));
+        $level = intval($stats['level'] ?? 1);
+        $vit = max(1, intval($stats['vitality'] ?? $stats['vit'] ?? 1));
+        $intelligence = max(0, intval($stats['intelligence'] ?? $st['int'] ?? 0));
+        $pdefbonus = $stats['physical_defense_bonus'];
+        $mdefbonus = $stats['magical_defense_bonus'];
+        $vitDef = $stats['vitality_defense_bonus'];
+        $intDef = $stats['intelligence_magical_defense_bonus'];
+        $defStats = $this->calculateDefenseFromVit($level, $vit, $intelligence, $pdefbonus, $mdefbonus, $vitDef, $intDef);
 
-        $defStats = $this->calculateDefenseFromVit($level, $vit, $intelligence);
 
         // Atualiza stats dinamicamente
-        $st['hp'] = $defStats['hp'];
-        $st['physical_defense'] = $defStats['physical_defense'];
-        $st['magical_defense'] = $defStats['magical_defense'];
+        $stats['physical_defense'] = $defStats['physical_defense'];
+        $stats['magical_defense'] = $defStats['magical_defense'];
 
         return ($skillType === 'physical') ? $defStats['physical_defense'] : $defStats['magical_defense'];
     }
