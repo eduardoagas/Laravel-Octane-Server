@@ -2,9 +2,10 @@
 
 namespace App\Listeners\WebSockets\Handlers;
 
+use App\Models\Skill;
 use App\Models\Character;
-use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Redis;
 use Laravel\Reverb\Contracts\Connection;
 
 class CharacterSyncHandler
@@ -34,23 +35,46 @@ class CharacterSyncHandler
                 $skillsArray = [];
                 foreach ($soul->skills as $skill) {
                     $skillArr = [
-                        'id' => $skill->id,
-                        'name' => $skill->name,
-                        'type' => $skill->type,
-                        'power' => $skill->power ?? 0,
-                        'stamina_cost' => $skill->stamina_cost ?? 0,
-                        'pre_delay' => $skill->pre_delay ?? 0,
-                        'post_delay' => $skill->post_delay ?? 0,
-                        'duration' => $skill->duration,
-                        'level' => $skill->level ?? 1,
-                        'stat' => $skill->stat,
-                        'tick_interval' => $skill->tick_interval ?? null,
-                        'tick_skill_id' => $skill->tick_skill_id ?? null,
+                        'id'             => $skill->id,
+                        'name'           => $skill->name,
+                        'type'           => $skill->type,
+                        'power'          => $skill->power ?? 0,
+                        'stamina_cost'   => $skill->stamina_cost ?? 0,
+                        'pre_delay'      => $skill->pre_delay ?? 0,
+                        'post_delay'     => $skill->post_delay ?? 0,
+                        'duration'       => $skill->duration,
+                        'level'          => $skill->level ?? 1,
+                        'stat'           => $skill->stat,
+                        'tick_interval'  => $skill->tick_interval ?? null,
+                        'tick_skill_id'  => $skill->tick_skill_id ?? null,
                         'tick_skill_flag' => $skill->tick_skill_flag ?? false,
                     ];
 
-                    if (!empty($skill->tick_skill_flag) || !empty($skill->tick_skill_id)) {
+                    // 1️⃣ Skill de tick direta
+                    if (!empty($skill->tick_skill_flag)) {
                         $tickSkillsForInstance[$skill->id] = $skillArr;
+                    }
+
+                    // 2️⃣ Se skill possui tick_skill_id, adiciona a skill de tick correspondente
+                    if (!empty($skill->tick_skill_id)) {
+                        $tickSkill = Skill::find($skill->tick_skill_id);
+                        if ($tickSkill) {
+                            $tickSkillsForInstance[$tickSkill->id] = [
+                                'id'             => $tickSkill->id,
+                                'name'           => $tickSkill->name,
+                                'type'           => $tickSkill->type,
+                                'power'          => $tickSkill->power ?? 0,
+                                'stamina_cost'   => $tickSkill->stamina_cost ?? 0,
+                                'pre_delay'      => $tickSkill->pre_delay ?? 0,
+                                'post_delay'     => $tickSkill->post_delay ?? 0,
+                                'duration'       => $tickSkill->duration,
+                                'level'          => $tickSkill->level ?? 1,
+                                'stat'           => $tickSkill->stat,
+                                'tick_interval'  => $tickSkill->tick_interval ?? null,
+                                'tick_skill_id'  => $tickSkill->tick_skill_id ?? null,
+                                'tick_skill_flag' => $tickSkill->tick_skill_flag ?? false,
+                            ];
+                        }
                     }
 
                     $skillsArray[] = $skillArr;
@@ -65,11 +89,11 @@ class CharacterSyncHandler
         }
 
         // Redis: snapshot da grid do personagem
-        $instanceGridKey = "character:{$characterId}:equipped_soul_grid";
+        $instanceGridKey = "world:{$characterId}:character:{$characterId}:equipped_soul_grid";
         Redis::set($instanceGridKey, json_encode($soulsArray, JSON_UNESCAPED_UNICODE));
 
         // Redis: tick skills
-        $instanceTickSkillsKey = "character:{$characterId}:tick_skills";
+        $instanceTickSkillsKey = "world:{$characterId}:character:{$characterId}:tick_skills";
         Redis::set($instanceTickSkillsKey, json_encode(array_values($tickSkillsForInstance), JSON_UNESCAPED_UNICODE));
 
         //$normalizedStats = $this->normalizeStatsValue($stats);

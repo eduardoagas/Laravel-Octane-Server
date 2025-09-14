@@ -56,10 +56,19 @@ class SoulGrid extends Model
             // Ignora chaves não numéricas ou relacionadas a IDs/foreign keys
             if (in_array($key, ['id', 'soul_grid_id', 'created_at', 'updated_at'])) continue;
             if (is_numeric($value)) {
-                if ($operation === 'add') {
-                    $characterStats->{$key} = ($characterStats->{$key} ?? 0) + $value;
-                } else { // subtract
-                    $characterStats->{$key} = ($characterStats->{$key} ?? 0) - $value;
+                if ($key === 'hp') {
+                    // Em vez de alterar hp direto, altera hp_bonus
+                    if ($operation === 'add') {
+                        $characterStats->hp_bonus += $value;
+                    } else {
+                        $characterStats->hp_bonus -= $value;
+                    }
+                } else {
+                    if ($operation === 'add') {
+                        $characterStats->{$key} = ($characterStats->{$key} ?? 0) + $value;
+                    } else {
+                        $characterStats->{$key} = ($characterStats->{$key} ?? 0) - $value;
+                    }
                 }
             }
         }

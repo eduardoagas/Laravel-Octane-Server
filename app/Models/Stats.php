@@ -18,6 +18,7 @@ class Stats extends Model
         'wisdom',
         'physical_damage_resistance',
         'magical_damage_resistance',
+        'hp_bonus',
         'nstatus_resistance',
         'nstats_potency',
         'burn_resistance',

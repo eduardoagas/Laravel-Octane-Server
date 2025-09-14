@@ -190,6 +190,7 @@ class CharacterHelpers
             'id' => 4,
             'name' => 'Wait',
             'type' => 'buff',
+            'stat' => 'physical_defense',
             'power' => 0,
             'duration' => 3,
             'stamina_cost' => 0,
@@ -313,6 +314,8 @@ class CharacterHelpers
         $stats->hp = (int) round($derived['hp']);
         $stats->physical_defense = (int) round($derived['physical_defense']);
         $stats->magical_defense = (int) round($derived['magical_defense']);
+        // Recalcula HP total incluindo hp_bonus
+        $stats->hp = $stats->base_hp + ($stats->hp_bonus ?? 0);
         $stats->save();
 
         // Atualiza Redis
@@ -425,7 +428,7 @@ class CharacterHelpers
         }
 
         // Checar se personagem já tem grid equipado
-        $equippedGrid = $character->equippedSoulGrids;
+        $equippedGrid = $character->equippedSoulGrid;
         if (!$equippedGrid) {
             $equippedGrid = $templateGrid->replicateForCharacter($character);
         }
@@ -468,9 +471,35 @@ class CharacterHelpers
             ])->toArray();
 
             foreach ($skillsArray as $skill) {
-                if (!empty($skill['tick_skill_flag']) || !empty($skill['tick_skill_id'])) {
-                    $tickId = $skill['tick_skill_flag'] ? $skill['id'] : $skill['tick_skill_id'];
-                    $tickSkillsForRedis[$tickId] = $skill;
+                // Adiciona a própria skill se for tick
+                if (!empty($skill['tick_skill_flag'])) {
+                    $tickSkillsForRedis[$skill['id']] = $skill;
+                }
+
+                // Adiciona a skill referenciada se existir
+                if (!empty($skill['tick_skill_id'])) {
+                    $tickSkill = Skill::find($skill['tick_skill_id']);
+                    if ($tickSkill) {
+                        $tickSkillsForRedis[$tickSkill->id] = [
+                            'id' => $tickSkill->id,
+                            'name' => $tickSkill->name,
+                            'type' => $tickSkill->type,
+                            'power' => $tickSkill->power ?? 0,
+                            'stamina_cost' => $tickSkill->stamina_cost ?? 0,
+                            'pre_delay' => $tickSkill->pre_delay ?? 0,
+                            'post_delay' => $tickSkill->post_delay ?? 0,
+                            'duration' => $tickSkill->duration ?? null,
+                            'level' => $tickSkill->level ?? 1,
+                            'stat' => $tickSkill->stat ?? null,
+                            'tick_interval' => $tickSkill->tick_interval ?? null,
+                            'tick_skill_id' => $tickSkill->tick_skill_id ?? null,
+                            'tick_skill_flag' => $tickSkill->tick_skill_flag ?? false,
+                            'add_effects' => $tickSkill->addEffects->map(fn($effect) => [
+                                'stat' => $effect->stat,
+                                'value' => $effect->value,
+                            ])->toArray(),
+                        ];
+                    }
                 }
             }
 
