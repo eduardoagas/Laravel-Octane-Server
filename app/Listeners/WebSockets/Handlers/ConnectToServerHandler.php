@@ -242,9 +242,10 @@ class CharacterHelpers
     /**
      * Calcula stamina a partir do level e wisdom
      */
-    public function calculateStamina(int $level, int $wisdom): int
+    public function calculateStamina(int $level, int $wisdom, float $staminaBonus = 0): int
     {
-        return (int) (25 + (($level == 0 ? 1 : $level) * 1.2) + ((1 + ($wisdom == 0 ? 1 : $wisdom)) * 2));
+        return (int) $staminaBonus + (25 + (($level == 0 ? 1 : $level) * 1.2) + ((1 + ($wisdom == 0 ? 1 : $wisdom)) * 2));
+        
     }
 
     /**
@@ -277,7 +278,7 @@ class CharacterHelpers
     }
 
 
-    private function calculateDefenseFromVit(int $level, int $vit, int $intelligence = 0): array
+    private function calculateDefenseFromVit(int $level, int $vit, int $intelligence = 0, float $physicalDefBonus = 0, float $magicalDefBonus = 0): array
     {
         // Coeficientes calibrados (sincronizar com Lua)
         $A = 3.703913650809579;
@@ -287,14 +288,17 @@ class CharacterHelpers
         $MDEF_base = 2.0;
 
         $vit = max(2, $vit);
+
         $HPMax = 50 + ($A * $vit + $B * pow($vit, 1.5)) + ($level * 15);
-        $DEF   = $DEF_base + $k_def * $vit;
-        $MDEF  = $MDEF_base + 0.5 * $k_def * $vit + 0.5 * $intelligence;
+        $DEF   = $DEF_base + $k_def * $vit + $physicalDefBonus;
+        $MDEF  = $MDEF_base + 0.5 * $k_def * $vit + 0.5 * $intelligence + $magicalDefBonus;
+
+        
 
         return [
             'hp' => (float)$HPMax,
-            'physical_defense'    => (float)$DEF,
-            'magical_defense'   => (float)$MDEF,
+            'physical_defense' => (float)$DEF,
+            'magical_defense' => (float)$MDEF,
         ];
     }
 

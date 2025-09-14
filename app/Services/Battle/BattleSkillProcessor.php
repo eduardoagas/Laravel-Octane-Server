@@ -17,6 +17,13 @@ use Illuminate\Support\Facades\Log;
  */
 class BattleSkillProcessor
 {
+    private StaminaService $staminaService;
+
+    public function __construct()
+    {
+        $this->staminaService = new StaminaService();
+    }
+
     public function processSkill(
         array $skill,
         array $casterEntity,
@@ -219,20 +226,76 @@ class BattleSkillProcessor
         return $copy;
     }
 
-    protected function applyEffectsFromHash(string $hashKey, array &$stats): void
+    protected function applyEffectsFromHash(string $hashKey, array &$stats, ?string $battleId = null, ?string $playerInstanceId = null): void
     {
+        $originalVit = intval($stats['vitality'] ?? $stats['vit'] ?? 0);
+        $originalInt = intval($stats['intelligence'] ?? $stats['int'] ?? 0);
+        $originalWis = intval($stats['wisdom'] ?? $stats['wis'] ?? 0);
+        $originalDex = intval($stats['dexterity'] ?? $stats['dex'] ?? 0);
+        $originalStamina = floatval($stats['stamina'] ?? 0);
+
         $entries = Redis::hgetall($hashKey);
-        if (empty($entries)) return;
-        foreach ($entries as $json) {
-            $buffData = json_decode($json, true);
-            $statName = $buffData['stat'] ?? null;
-            $powerVal = floatval($buffData['power'] ?? 0);
-            if ($statName && $powerVal != 0) {
-                $current = floatval($stats[$statName] ?? 0);
-                $stats[$statName] = $current + $powerVal;
+        if (!empty($entries)) {
+            foreach ($entries as $json) {
+                $buffData = json_decode($json, true);
+                $statName = $buffData['stat'] ?? null;
+                $powerVal = floatval($buffData['power'] ?? 0);
+                if ($statName && $powerVal != 0) {
+                    $current = floatval($stats[$statName] ?? 0);
+                    $stats[$statName] = $current + $powerVal;
+                }
+            }
+        }
+
+        // Recalcular HP e defesas se VIT ou INT mudou
+        $newVit = intval($stats['vitality'] ?? $stats['vit'] ?? 0);
+        $newInt = intval($stats['intelligence'] ?? $stats['int'] ?? 0);
+        if ($newVit !== $originalVit || $newInt !== $originalInt) {
+            $level = intval($stats['level'] ?? 1);
+            $intelligence = intval($stats['intelligence'] ?? $stats['int'] ?? 0);
+            $pdefbonus = $stats['physical_defense_bonus'];
+            $mdefbonus = $stats['magical_defense_bonus'];
+            $defStats = $this->calculateDefenseFromVit($level, $newVit, $intelligence, $pdefbonus, $mdefbonus);
+
+            $stats['hp'] = $defStats['hp'];
+            $stats['physical_defense'] = $defStats['physical_defense'];
+            $stats['magical_defense'] = $defStats['magical_defense'];
+        }
+
+        // Recalcular stamina se stamina_bonus ou DEX mudou
+        $newStamina = floatval($stats['stamina'] ?? 0);
+        $newDex = intval($stats['dexterity'] ?? $stats['dex'] ?? 0);
+
+        if (($newStamina !== $originalStamina || $newDex !== $originalDex) && $battleId && $playerInstanceId) {
+    
+            // define o tipo dinamicamente: character ou monster
+            $entityType = $stats['type'] ?? 'character';
+            if (!in_array($entityType, ['character', 'monster'])) $entityType = 'character';
+            $stepLut = $entityType === 'monster' ? 5 : 1;
+
+            // passa DEX para recalcStamina
+            $recalc = $this->staminaService->recalcStamina(
+                $battleId,
+                "{$entityType}:{$playerInstanceId}",
+                $newStamina,
+                $newDex,   // dex influencia a regen
+                $stepLut
+            );
+
+            if ($recalc) {
+                $stats['stamina'] = $recalc['current'];
             }
         }
     }
+
+
+
+
+    public function calculateStamina(int $level, int $wisdom, float $staminaBonus = 0): int
+    {
+        return (int) $staminaBonus + (25 + (($level == 0 ? 1 : $level) * 1.2) + ((1 + ($wisdom == 0 ? 1 : $wisdom)) * 2));
+    }
+
 
     protected function findCasterRaw(string $battleId, string $casterType, string $casterId): ?array
     {
@@ -250,11 +313,46 @@ class BattleSkillProcessor
         return null;
     }
 
-    protected function getDefense(array $st, string $skillType)
+    private function calculateDefenseFromVit(int $level, int $vit, int $intelligence = 0, float $physicalDefBonus = 0, float $magicalDefBonus = 0): array
     {
-        if ($skillType === 'physical') return floatval($st['physical_defense'] ?? 0);
-        return floatval($st['magical_defense'] ?? 0);
+        // Coeficientes calibrados (sincronizar com Lua)
+        $A = 3.703913650809579;
+        $B = 2.6906470089863075;
+        $DEF_base = 5.0;
+        $k_def = 1.0;
+        $MDEF_base = 2.0;
+
+        $vit = max(2, $vit);
+
+        $HPMax = 50 + ($A * $vit + $B * pow($vit, 1.5)) + ($level * 15);
+        $DEF   = $DEF_base + $k_def * $vit + $physicalDefBonus;
+        $MDEF  = $MDEF_base + 0.5 * $k_def * $vit + 0.5 * $intelligence + $magicalDefBonus;
+
+        return [
+            'hp' => (float)$HPMax,
+            'physical_defense' => (float)$DEF,
+            'magical_defense' => (float)$MDEF,
+        ];
     }
+
+
+
+    protected function getDefense(array $st, string $skillType): float
+    {
+        $level = intval($st['level'] ?? 1);
+        $vit = max(1, intval($st['vitality'] ?? $st['vit'] ?? 1));
+        $intelligence = max(0, intval($st['intelligence'] ?? $st['int'] ?? 0));
+
+        $defStats = $this->calculateDefenseFromVit($level, $vit, $intelligence);
+
+        // Atualiza stats dinamicamente
+        $st['hp'] = $defStats['hp'];
+        $st['physical_defense'] = $defStats['physical_defense'];
+        $st['magical_defense'] = $defStats['magical_defense'];
+
+        return ($skillType === 'physical') ? $defStats['physical_defense'] : $defStats['magical_defense'];
+    }
+
 
     protected function getDamageDefense(array $st, string $skillType, ?array $casterEntity)
     {

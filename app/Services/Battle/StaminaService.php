@@ -69,6 +69,70 @@ class StaminaService
         return $data;
     }
 
+    /**
+     * Recalcula o máximo de stamina e ajusta o estado atual sem zerar o valor.
+     *
+     * Útil quando stats como stamina_bonus ou dexterity mudam.
+     *
+     * @param string $battleId
+     * @param string $field ex: "character:3"
+     * @param float|null $newMaxStamina opcional (stamina + bonus)
+     * @param float|null $newDex opcional
+     * @param int $step step da LUT (default 5)
+     * @return array|null retorna ['current' => float, 'max' => float] ou null se erro
+     */
+    public function recalcStamina(string $battleId, string $field, ?float $newMaxStamina = null, ?float $newDex = null, int $step = 5): ?array
+    {
+        $dataKey = "battle:{$battleId}:stamina_data";
+        $nowTs = now()->timestamp;
+
+        $raw = Redis::hget($dataKey, $field);
+        if (!$raw) return null;
+
+        $parsed = json_decode($raw, true) ?: [];
+
+        // calcula stamina atual antes da atualização
+        $state = self::computeRegenState($parsed, $nowTs);
+        $current = $state['current_after_regen'] ?? 0.0;
+
+        // ajusta valores máximos e dex
+        $maxStamina = $newMaxStamina ?? (float) ($parsed['max_stamina'] ?? 0.0);
+        $dex = $newDex ?? (float) ($parsed['dexterity'] ?? 1.0);
+
+        $parsed['max_stamina'] = $maxStamina;
+        $parsed['dexterity'] = $dex;
+
+        // gera novo LUT / profile se quiser salvar
+        try {
+            $regenProfile = $this->buildRegenProfile($maxStamina, $dex, $step);
+            $parsed['base_regen'] = $regenProfile['base_regen'] ?? 0.0;
+
+            // salva profile no Redis (se houver key de batalha)
+            if (!empty($battleId)) {
+                $profileKey = "battle:{$battleId}:stamina_profile";
+                Redis::hset($profileKey, $field, json_encode($regenProfile, JSON_UNESCAPED_UNICODE));
+            }
+        } catch (\Throwable $e) {
+            Log::warning("[recalcStamina] Failed to rebuild LUT", [
+                'battle' => $battleId,
+                'field' => $field,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // atualiza estado mantendo current
+        $parsed['initial_stamina'] = $current;
+        $parsed['used_stamina_total'] = 0.0;
+        $parsed['start_time'] = $nowTs;
+
+        Redis::hset($dataKey, $field, json_encode($parsed, JSON_UNESCAPED_UNICODE));
+
+        return [
+            'current' => $current,
+            'max' => $maxStamina,
+        ];
+    }
+
 
 
     /**

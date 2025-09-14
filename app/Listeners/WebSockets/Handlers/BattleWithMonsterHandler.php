@@ -32,8 +32,17 @@ class BattleWithMonsterHandler
             return;
         }
 
-        // 3️⃣ Criar ID único para a batalha
-        $battleId = uniqid('battle_', true);
+        // 2️⃣ Checa se o jogador já está em uma batalha
+        $battleId = $sessionData['battle_instance_id'] ?? null;
+
+        if ($battleId && Redis::exists("battle:$battleId")) {
+            Log::info("Character $characterId is already in battle $battleId, reusing existing instance.");
+        } else {
+            // 3️⃣ Criar ID único para a batalha
+            $battleId = uniqid('battle_', true);
+            Redis::hset("session:$token", 'battle_instance_id', $battleId);
+            Log::info("New battle $battleId created for character $characterId");
+        }
 
         // Vincular battle_instance_id na sessão
         Redis::hset("session:$token", 'battle_instance_id', $battleId);
@@ -203,7 +212,7 @@ class BattleWithMonsterHandler
                 (int)($stats['dexterity'] ?? 0),
                 $battleId,
                 "character:{$playerInstanceId}",
-                2 // step da LUT (ajuste se quiser)
+                1 // step da LUT (ajuste se quiser)
             );
             Redis::hset("battle:$battleId:stamina_data", "character:{$playerInstanceId}", json_encode($characterStaminaData, JSON_UNESCAPED_UNICODE));
 
@@ -346,7 +355,7 @@ class BattleWithMonsterHandler
                 (int)($monsterStats['dexterity'] ?? 0),
                 $battleId,
                 "character:{$monsterInstanceId}",
-                1 // step da LUT (ajuste se quiser)
+                5 // step da LUT (ajuste se quiser)
             );
             Redis::hset("battle:$battleId:stamina_data", "monster:{$monsterInstanceId}", json_encode($monsterStaminaData, JSON_UNESCAPED_UNICODE));
 
