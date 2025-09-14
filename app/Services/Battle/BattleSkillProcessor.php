@@ -86,6 +86,10 @@ class BattleSkillProcessor
 
             $damage = max(0, ($damage * (1 + $elemental_potency / 100.0)));
             $defense = $this->getDamageDefense($stats, $skillType, $casterSnapshot);
+            Log::debug("Antes do dano: stats aplicados", [
+                'targetId' => $targetId,
+                'stats' => $stats,
+            ]);
             $damage = max(0, $damage - $defense);
 
             if ($elemental_resistance != 0) $damage = $damage * (1 - $elemental_resistance / 100.0);
@@ -250,13 +254,14 @@ class BattleSkillProcessor
         }
 
         // Recalcular HP e defesas se VIT ou INT mudou
+        $hp_bonus = $stats['hp_bonus'];
         $newVit = intval($stats['vitality'] ?? $stats['vit'] ?? 0);
         $newInt = intval($stats['intelligence'] ?? $stats['int'] ?? 0);
         $newVitDef = intval($stats['vitality_defense_bonus'] ?? $stats['vitDef'] ?? 0);
         $newIntDef = intval($stats['intelligence_magical_defense_bonus'] ?? $stats['intDef'] ?? 0);
         if ($newVit !== $originalVit ||  $newVit) {
             $level = intval($stats['level'] ?? 1);
-            $defStats = $this->calculateDefenseFromVit($level, $newVit);
+            $defStats = $this->calculateDefenseFromVit($level, $newVit, 0, 0, 0,0, 0, $hp_bonus);
 
             $stats['hp'] = $defStats['hp'];
         }
@@ -293,6 +298,9 @@ class BattleSkillProcessor
                 $stats['stamina'] = $recalc['current'];
             }
         }
+        Log::debug("applyEffectsFromHash: stats atualizados para {$hashKey}", [
+            'stats' => $stats,
+        ]);
     }
 
 
@@ -319,7 +327,7 @@ class BattleSkillProcessor
         return null;
     }
 
-    private function calculateDefenseFromVit(int $level, int $vit, int $intelligence = 0, float $physicalDefBonus = 0, float $magicalDefBonus = 0, int $vitDef = 0, $intDef = 0): array
+    private function calculateDefenseFromVit(int $level, int $vit, int $intelligence = 0, float $physicalDefBonus = 0, float $magicalDefBonus = 0, int $vitDef = 0, $intDef = 0, $hp_bonus): array
     {
         // Coeficientes calibrados (sincronizar com Lua)
         $A = 3.703913650809579;
@@ -330,7 +338,7 @@ class BattleSkillProcessor
 
         $vit = max(2, $vit + $vitDef);
 
-        $HPMax = 50 + ($A * $vit + $B * pow($vit, 1.5)) + ($level * 15);
+        $HPMax = 50 + ($A * $vit + $B * pow($vit, 1.5)) + ($level * 15) + $hp_bonus;
         $DEF   = $DEF_base + $k_def * $vit + $physicalDefBonus;
         $MDEF  = $MDEF_base + 0.5 * $k_def * $vit + 0.5 * ($intelligence + $intDef) + $magicalDefBonus;
 
@@ -345,20 +353,24 @@ class BattleSkillProcessor
 
     protected function getDefense(array $stats, string $skillType): float
     {
+        Log::debug("getDefense (entrada)", [
+            'skillType' => $skillType,
+            'stats' => $stats,
+        ]);
         $level = intval($stats['level'] ?? 1);
         $vit = max(1, intval($stats['vitality'] ?? $stats['vit'] ?? 1));
-        $intelligence = max(0, intval($stats['intelligence'] ?? $st['int'] ?? 0));
+        $intelligence = max(0, intval($stats['intelligence'] ?? $stats['int'] ?? 0));
         $pdefbonus = $stats['physical_defense_bonus'];
         $mdefbonus = $stats['magical_defense_bonus'];
         $vitDef = $stats['vitality_defense_bonus'];
         $intDef = $stats['intelligence_magical_defense_bonus'];
-        $defStats = $this->calculateDefenseFromVit($level, $vit, $intelligence, $pdefbonus, $mdefbonus, $vitDef, $intDef);
-
-
-        // Atualiza stats dinamicamente
-        $stats['physical_defense'] = $defStats['physical_defense'];
-        $stats['magical_defense'] = $defStats['magical_defense'];
-
+        $hp_bonus = $stats['hp_bonus'];
+        $defStats = $this->calculateDefenseFromVit($level, $vit, $intelligence, $pdefbonus, $mdefbonus, $vitDef, $intDef, $hp_bonus);
+        Log::debug("getDefense (saida)", [
+            'skillType' => $skillType,
+            'defStats' => $defStats,
+            'return' => ($skillType === 'physical') ? $defStats['physical_defense'] : $defStats['magical_defense'],
+        ]);
         return ($skillType === 'physical') ? $defStats['physical_defense'] : $defStats['magical_defense'];
     }
 

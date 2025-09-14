@@ -278,7 +278,7 @@ class CharacterHelpers
     }
 
 
-    private function calculateDefenseFromVit(int $level, int $vit, int $intelligence = 0, float $physicalDefBonus = 0, float $magicalDefBonus = 0, int $vitDef = 0, $intDef = 0): array
+    private function calculateDefenseFromVit(int $level, int $vit, int $intelligence = 0, float $physicalDefBonus = 0, float $magicalDefBonus = 0, int $vitDef = 0, $intDef = 0, $hp_bonus): array
     {
         // Coeficientes calibrados (sincronizar com Lua)
         $A = 3.703913650809579;
@@ -289,7 +289,7 @@ class CharacterHelpers
 
         $vit = max(2, $vit + $vitDef);
 
-        $HPMax = 50 + ($A * $vit + $B * pow($vit, 1.5)) + ($level * 15);
+        $HPMax = 50 + ($A * $vit + $B * pow($vit, 1.5)) + ($level * 15) + $hp_bonus;
         $DEF   = $DEF_base + $k_def * $vit + $physicalDefBonus;
         $MDEF  = $MDEF_base + 0.5 * $k_def * $vit + 0.5 * ($intelligence + $intDef) + $magicalDefBonus;
 
@@ -312,14 +312,12 @@ class CharacterHelpers
         }
 
         // Calcula stats derivados de Vitality
-        $derived = $this->calculateDefenseFromVit($stats->level, $stats->vitality, $stats->intelligence);
+        $derived = $this->calculateDefenseFromVit($stats->level, $stats->vitality, $stats->intelligence, 0, 0, 0, 0, $stats->hp_bonus);
 
         // Atualiza stats do personagem
-        $base_hp = (int) round($derived['hp']);
+        $stats->hp = (int) round($derived['hp']);
         $stats->physical_defense = (int) round($derived['physical_defense']);
         $stats->magical_defense = (int) round($derived['magical_defense']);
-        // Recalcula HP total incluindo hp_bonus
-        $stats->hp = $base_hp + ($stats->hp_bonus ?? 0);
         $stats->save();
 
         // Atualiza Redis
