@@ -128,6 +128,30 @@ class CanChangeSoulHandler implements HandlesUnityEvent
 
         $newActiveSoul = $soulsArray[$slotIndex];
 
+        // VERIFICA SE É A MESMA SOUL ATIVA
+        $currentSoulKey = "battle:$battleId:character:{$playerInstanceId}:active_soul_id";
+        $currentSoulId = Redis::get($currentSoulKey);
+        $newSoulId = $newActiveSoul['id'] ?? null;
+
+        if ($currentSoulId !== null && $newSoulId !== null && (int)$currentSoulId === (int)$newSoulId) {
+            Log::info("[CanChangeSoulHandler] Ignorando troca: mesma soul ativa", [
+                'battle' => $battleId,
+                'instanceId' => $playerInstanceId,
+                'slotIndex' => $slotIndex,
+                'soulId' => $newSoulId,
+            ]);
+
+            /*$connection->send(json_encode([
+                'event' => 'soulChangeQueued',
+                'data' => [
+                    'slot_index' => (int)$slotIndex,
+                    'canChange' => false,
+                    'new_active_soul_id' => $currentSoulId,
+                ]
+            ]));*/
+            return; // não prossegue
+        }
+
         // 4) Enfileira a ação usando instanceId no hash que o worker/processPendingSoulChanges espera
         $pendingHash = "battle:$battleId:pending_soul_changes";
         $actionPayload = [
