@@ -138,6 +138,7 @@ class CanUseSkillHandler implements HandlesUnityEvent
                 'stamina' => $stamina,
                 'cost' => $cost,
             ]);
+            return;
         }
 
         $connection->send(json_encode([
