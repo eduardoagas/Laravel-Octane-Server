@@ -230,6 +230,8 @@ class BattleSkillProcessor
     {
         $originalVit = intval($stats['vitality'] ?? $stats['vit'] ?? 0);
         $originalInt = intval($stats['intelligence'] ?? $stats['int'] ?? 0);
+        $originalVitDef = intval($stats['vitality_defense_bonus'] ?? $stats['vitDef'] ?? 0);
+        $originalIntDef = intval($stats['intelligence_magical_defense_bonus'] ?? $stats['intDef'] ?? 0);
         $originalWis = intval($stats['wisdom'] ?? $stats['wis'] ?? 0);
         $originalDex = intval($stats['dexterity'] ?? $stats['dex'] ?? 0);
         $originalStamina = floatval($stats['stamina'] ?? 0);
@@ -250,16 +252,28 @@ class BattleSkillProcessor
         // Recalcular HP e defesas se VIT ou INT mudou
         $newVit = intval($stats['vitality'] ?? $stats['vit'] ?? 0);
         $newInt = intval($stats['intelligence'] ?? $stats['int'] ?? 0);
-        if ($newVit !== $originalVit || $newInt !== $originalInt) {
+        $newVitDef = intval($stats['vitality_defense_bonus'] ?? $stats['vitDef'] ?? 0);
+        $newIntDef = intval($stats['intelligence_magical_defense_bonus'] ?? $stats['intDef'] ?? 0);
+        if ($newVit !== $originalVit || $newInt !== $originalInt || $newVit ) {
             $level = intval($stats['level'] ?? 1);
             $intelligence = intval($stats['intelligence'] ?? $stats['int'] ?? 0);
             $pdefbonus = $stats['physical_defense_bonus'];
             $mdefbonus = $stats['magical_defense_bonus'];
-            $defStats = $this->calculateDefenseFromVit($level, $newVit, $intelligence, $pdefbonus, $mdefbonus);
+            $vitDef = $stats['vitality_defense_bonus'];
+            $intDef = $stats['intelligence_magical_defense_bonus'];
+            $defStats = $this->calculateDefenseFromVit($level, $newVit, $intelligence, $pdefbonus, $mdefbonus, $vitDef, $intDef);
 
             $stats['hp'] = $defStats['hp'];
             $stats['physical_defense'] = $defStats['physical_defense'];
             $stats['magical_defense'] = $defStats['magical_defense'];
+        }
+
+        // Recalcular stamina MAX se WIS mudou
+        $newWis = intval($stats['wisdom'] ?? $stats['wis'] ?? 0);
+        if ($newWis !== $originalWis && $battleId && $playerInstanceId) {
+            $staminaBonus = floatval($stats['stamina_bonus'] ?? 0);
+            $maxStamina = $this->calculateStamina(intval($stats['level'] ?? 1), $newWis, $staminaBonus);
+            $stats['stamina'] = max($stats['stamina'], $maxStamina); // opcional: garante que current não ultrapasse max
         }
 
         // Recalcular stamina se stamina_bonus ou DEX mudou
@@ -267,7 +281,7 @@ class BattleSkillProcessor
         $newDex = intval($stats['dexterity'] ?? $stats['dex'] ?? 0);
 
         if (($newStamina !== $originalStamina || $newDex !== $originalDex) && $battleId && $playerInstanceId) {
-    
+
             // define o tipo dinamicamente: character ou monster
             $entityType = $stats['type'] ?? 'character';
             if (!in_array($entityType, ['character', 'monster'])) $entityType = 'character';
@@ -287,7 +301,6 @@ class BattleSkillProcessor
             }
         }
     }
-
 
 
 
@@ -313,7 +326,7 @@ class BattleSkillProcessor
         return null;
     }
 
-    private function calculateDefenseFromVit(int $level, int $vit, int $intelligence = 0, float $physicalDefBonus = 0, float $magicalDefBonus = 0): array
+    private function calculateDefenseFromVit(int $level, int $vit, int $intelligence = 0, float $physicalDefBonus = 0, float $magicalDefBonus = 0, int $vitDef = 0, $intDef = 0): array
     {
         // Coeficientes calibrados (sincronizar com Lua)
         $A = 3.703913650809579;
@@ -322,11 +335,11 @@ class BattleSkillProcessor
         $k_def = 1.0;
         $MDEF_base = 2.0;
 
-        $vit = max(2, $vit);
+        $vit = max(2, $vit + $vitDef);
 
         $HPMax = 50 + ($A * $vit + $B * pow($vit, 1.5)) + ($level * 15);
         $DEF   = $DEF_base + $k_def * $vit + $physicalDefBonus;
-        $MDEF  = $MDEF_base + 0.5 * $k_def * $vit + 0.5 * $intelligence + $magicalDefBonus;
+        $MDEF  = $MDEF_base + 0.5 * $k_def * $vit + 0.5 * ($intelligence + $intDef) + $magicalDefBonus;
 
         return [
             'hp' => (float)$HPMax,

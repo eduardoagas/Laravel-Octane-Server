@@ -84,7 +84,9 @@ class Stats extends Model
         'wisdom_break_resistance',
         'armor_break_resistance',
         'shield_break_resistance',
-        'acc_break_resistance'
+        'acc_break_resistance',
+        'vitality_defense_bonus',
+        'intelligence_magical_defense_bonus',
     ];
 
     public function character()

@@ -164,19 +164,19 @@ class CharacterHelpers
             'id' => 2,
             'name' => 'Raise Defense',
             'type' => 'buff',
-            'stat' => 'physical_defense',
+            'stat' => 'vitality_defense_bonus',
             'power' => 5,
             'duration' => 8,
             'stamina_cost' => 10,
             'pre_delay' => 0,
             'post_delay' => 0,
             'level' => 1,
-            'add_effects' => [
+            /*'add_effects' => [
                 [
                     'stat' => 'physical_damage_resistance',
                     'value' => 100
                 ],
-            ],
+            ],*/
         ],
         3 => [
             'id' => 3,
@@ -245,7 +245,7 @@ class CharacterHelpers
     public function calculateStamina(int $level, int $wisdom, float $staminaBonus = 0): int
     {
         return (int) $staminaBonus + (25 + (($level == 0 ? 1 : $level) * 1.2) + ((1 + ($wisdom == 0 ? 1 : $wisdom)) * 2));
-        
+
     }
 
     /**
@@ -278,7 +278,7 @@ class CharacterHelpers
     }
 
 
-    private function calculateDefenseFromVit(int $level, int $vit, int $intelligence = 0, float $physicalDefBonus = 0, float $magicalDefBonus = 0): array
+    private function calculateDefenseFromVit(int $level, int $vit, int $intelligence = 0, float $physicalDefBonus = 0, float $magicalDefBonus = 0, int $vitDef = 0, $intDef = 0): array
     {
         // Coeficientes calibrados (sincronizar com Lua)
         $A = 3.703913650809579;
@@ -287,13 +287,11 @@ class CharacterHelpers
         $k_def = 1.0;
         $MDEF_base = 2.0;
 
-        $vit = max(2, $vit);
+        $vit = max(2, $vit + $vitDef);
 
         $HPMax = 50 + ($A * $vit + $B * pow($vit, 1.5)) + ($level * 15);
         $DEF   = $DEF_base + $k_def * $vit + $physicalDefBonus;
-        $MDEF  = $MDEF_base + 0.5 * $k_def * $vit + 0.5 * $intelligence + $magicalDefBonus;
-
-        
+        $MDEF  = $MDEF_base + 0.5 * $k_def * $vit + 0.5 * ($intelligence + $intDef) + $magicalDefBonus;
 
         return [
             'hp' => (float)$HPMax,
