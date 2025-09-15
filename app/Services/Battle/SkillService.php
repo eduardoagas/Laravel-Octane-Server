@@ -192,69 +192,54 @@ class SkillService
             'addEffects' => $skill['add_effects'] ?? []
         ];
 
+        $start = microtime(true);
+        $result = $this->processor->processSkill($skill, $casterEntity, $targetEntity, $battleId, $casterType, $targetTypeNormalized, $options);
+        $elapsed = (microtime(true) - $start) * 1000.0;
+        //Log::info("[SkillService][PHPProcessor] php_exec_ms=" . round($elapsed, 2) . " battle={$battleId} caster={$casterType}:{$casterId} target={$target['instanceId']} skill={$skillId}");
 
-        $skillHits = $skill['hits'] ?? 1;
-        $hitDelay = $skill['hit_delay'] ?? 0; // em ms
-        $return = [];
-        $time = 0;
-        for ($i = 0; $i < $skillHits; $i++) {
-            $start = microtime(true);
-            $result = $this->processor->processSkill($skill, $casterEntity, $targetEntity, $battleId, $casterType, $targetTypeNormalized, $options);
-            $elapsed = (microtime(true) - $start) * 1000.0;
-            //Log::info("[SkillService][PHPProcessor] php_exec_ms=" . round($elapsed, 2) . " battle={$battleId} caster={$casterType}:{$casterId} target={$target['instanceId']} skill={$skillId}");
-
-            // Caso o script não tenha retornado current_hp, leia do hpKey (fonte da verdade)
-            $targetHp = null;
-            if (isset($result['current_hp'])) {
-                $targetHp = (int)$result['current_hp'];
-            } else {
-                // hpKey padronizado: targetKey + ":" + targetId + ":hp"
-                $hpKey = "battle:{$battleId}:{$targetKey}:" . $target['instanceId'] . ":hp";
-                $hpRaw = Redis::get($hpKey);
-                if ($hpRaw !== null) {
-                    $targetHp = (int)$hpRaw;
-                }
+        // Caso o script não tenha retornado current_hp, leia do hpKey (fonte da verdade)
+        $targetHp = null;
+        if (isset($result['current_hp'])) {
+            $targetHp = (int)$result['current_hp'];
+        } else {
+            // hpKey padronizado: targetKey + ":" + targetId + ":hp"
+            $hpKey = "battle:{$battleId}:{$targetKey}:" . $target['instanceId'] . ":hp";
+            $hpRaw = Redis::get($hpKey);
+            if ($hpRaw !== null) {
+                $targetHp = (int)$hpRaw;
             }
-
-            // stamina read (mantive seu código)
-            $usedStaminaTotal = null;
-            if ($i == 0) {
-                $staminaField = "{$casterType}:{$casterId}";
-                $staminaKey = "battle:$battleId:stamina_data";
-                $staminaRaw = Redis::hget($staminaKey, $staminaField);
-                if ($staminaRaw) {
-                    $stParsed = json_decode($staminaRaw, true);
-                    $usedStaminaTotal = isset($stParsed['used_stamina_total']) ? (float)$stParsed['used_stamina_total'] : null;
-                }
-            }else{
-                $currentAfterConsumption = null;
-            }
-
-            $return[] = [
-                'battle_id' => $battleId,
-                'caster_id' => $casterId,
-                'skill_id' => $skillId,
-                'current_stamina' => $currentAfterConsumption ?? null,
-                'initial_stamina' => null,
-                'used_stamina_total' => $usedStaminaTotal,
-                'pre_delay' => $skill['pre_delay'] ?? 0,
-                'post_delay' => $skill['post_delay'] ?? 0,
-                'someoneDied' => $result['target_died'] ?? false,
-                'hit_index' => $i,
-                'hit_time' => $time,
-                'target_hp' => $targetHp,
-                'damage_dealt' => $result['damage_dealt'] ?? null,
-                'healed_amount' => $result['healed_amount'] ?? null,
-                'buff_applied' => $result['buff_applied'] ?? null,
-                'debuff_applied' => $result['debuff_applied'] ?? null,
-                'debuff_chance' => $result['debuff_chance'] ?? null,
-                'debuff_roll' => $result['debuff_roll'] ?? null,
-                'debuff_failed' => $result['debuff_failed'] ?? null,
-
-            ];
-            $time += $hitDelay;
         }
-        return $return;
+
+        // stamina read (mantive seu código)
+        $staminaField = "{$casterType}:{$casterId}";
+        $staminaKey = "battle:$battleId:stamina_data";
+        $staminaRaw = Redis::hget($staminaKey, $staminaField);
+        $usedStaminaTotal = null;
+        if ($staminaRaw) {
+            $stParsed = json_decode($staminaRaw, true);
+            $usedStaminaTotal = isset($stParsed['used_stamina_total']) ? (float)$stParsed['used_stamina_total'] : null;
+        }
+
+        return [
+            'battle_id' => $battleId,
+            'caster_id' => $casterId,
+            'skill_id' => $skillId,
+            'current_stamina' => $currentAfterConsumption ?? null,
+            'initial_stamina' => null,
+            'used_stamina_total' => $usedStaminaTotal,
+            'pre_delay' => $skill['pre_delay'] ?? 0,
+            'post_delay' => $skill['post_delay'] ?? 0,
+            'someoneDied' => $result['target_died'] ?? false,
+            'target_hp' => $targetHp,
+            'damage_dealt' => $result['damage_dealt'] ?? null,
+            'healed_amount' => $result['healed_amount'] ?? null,
+            'buff_applied' => $result['buff_applied'] ?? null,
+            'debuff_applied' => $result['debuff_applied'] ?? null,
+            'debuff_chance' => $result['debuff_chance'] ?? null,
+            'debuff_roll' => $result['debuff_roll'] ?? null,
+            'debuff_failed' => $result['debuff_failed'] ?? null,
+
+        ];
     }
 
 
