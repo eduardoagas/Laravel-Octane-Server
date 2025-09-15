@@ -234,36 +234,9 @@ class CharacterHelpers
             'pre_delay' => 0,
             'post_delay' => 0,
             'level' => 3,
-            'tick_skill_id' => 6, 
-            'tick_interval' => 10, //atualmente 1 tick = 0.5s
-        ],
-        8 => [
-            'id' => 1,
-            'name' => 'Double Shot Tick',
-            'type' => 'physical',
-            'power' => 4, //preset a = 10/30/60
-            'stamina_cost' => 0, //preset a = 25/50/140
-            'pre_delay' => 300,
-            'post_delay' => 0,
-            'level' => 1,
-            'tick_skill_flag' => true
-        ],
-        9 => [
-            'id' => 1,
-            'name' => 'Double Shot',
-            'type' => 'physical',
-            'stat' => 'hit',
-            'duration' => 1,
-            'power' => 4, //preset a = 10/30/60
-            'stamina_cost' => 25, //preset a = 25/50/140
-            'pre_delay' => 0,
-            'post_delay' => 0,
-            'level' => 1,
-            'tick_skill_id' => 8,
-            'tick_interval' => 1,
-            'stackBehavior' => 'add',
-            '$maxStacks' => 10,
-        ],
+            'tick_skill_id' => 6,
+            'tick_interval' => 5,
+        ]
     ];
 
     /**
@@ -272,6 +245,7 @@ class CharacterHelpers
     public function calculateStamina(int $level, int $wisdom, float $staminaBonus = 0): int
     {
         return (int) $staminaBonus + (25 + (($level == 0 ? 1 : $level) * 1.2) + ((1 + ($wisdom == 0 ? 1 : $wisdom)) * 2));
+
     }
 
     /**
@@ -464,7 +438,7 @@ class CharacterHelpers
         // Souls iniciais
         $initialSoulsData = [
             ['name' => 'Soul A', 'skills' => [1, 2, 3, 7]],
-            ['name' => 'Soul B', 'skills' => [9, 2, 3, 5]],
+            ['name' => 'Soul B', 'skills' => [1, 2, 3, 5]],
         ];
 
         $tickSkillsForRedis = [];

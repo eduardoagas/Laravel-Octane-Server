@@ -56,7 +56,7 @@ class AppServiceProvider extends ServiceProvider
                     \Illuminate\Support\Facades\Log::info("[BattleEffectsTicker] Processed effects for battle $battleId");
                 }
             }
-        }, 0.5);
+        }, 1.0);
 
         // === Processa skills pendentes ===
         Octane::tick('battle-skills-ticker', function () use ($battleManager) {
