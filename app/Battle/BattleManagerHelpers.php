@@ -462,8 +462,8 @@ class BattleManagerHelpers
             if (!isset($caster['stats'])) $caster['stats'] = [];
 
             try {
-                $result = $skillService->applySkill($caster, $target, $battleId, (int)$skillId, $casterType, $targetType);
-                Log::info("APPLY SKILL RESULT" . json_encode($result));
+                $resultarray = $skillService->applySkill($caster, $target, $battleId, (int)$skillId, $casterType, $targetType);
+                Log::info("APPLY SKILL RESULT" . json_encode($resultarray));
             } catch (\App\Exceptions\InsufficientStaminaException $e) {
                 Log::channel('battle_debug')->warning("[finalizeSkillCast] Stamina insuficiente", [
                     'battle' => $battleId,
@@ -480,95 +480,97 @@ class BattleManagerHelpers
                 return false;
             }
 
-            // stamina updates (captura tanto caster quanto target se o result os reportar)
-            $this->collectStaminaUpdatesFromResult($result, $staminaUpdates, $casterType, $targetType);
-            if (array_key_exists('current_stamina', $result) && $result['current_stamina'] !== null) {
-                $casterCurrentStamina = $result['current_stamina'];
+            foreach ($resultarray as $result) {
+                // stamina updates (captura tanto caster quanto target se o result os reportar)
+                $this->collectStaminaUpdatesFromResult($result, $staminaUpdates, $casterType, $targetType);
+                if (array_key_exists('current_stamina', $result) && $result['current_stamina'] !== null) {
+                    $casterCurrentStamina = $result['current_stamina'];
+                }
+
+                // monta mensagens de UI (actionInfoUse / actionInfoResult)
+                $casterName = $caster['name'] ?? 'Desconhecido';
+                $targetName = $target['name'] ?? ($target['username'] ?? 'Desconhecido');
+                $targetTypeStr = ($targetType === 'monster') ? 'Monstro' : 'Jogador';
+                $actionInfoUse = "{$casterName} usou skill {$skillName}";
+                $actionInfoResult = '';
+
+                if (isset($result['damage_dealt'])) {
+                    $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu dano de {$result['damage_dealt']}";
+                } elseif (isset($result['healed_amount'])) {
+                    $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu cura de {$result['healed_amount']}";
+                } elseif (isset($result['buff_applied'])) {
+                    $buff = $result['buff_applied'];
+                    $buffValue = $buff['power'] ?? 0;
+                    $buffDuration = $buff['duration'] ?? '∞';
+                    $buffStat = $buff['stat'] ?? 'unknown';
+                    $actionInfoResult = "Buff aplicado: +{$buffValue} {$buffStat} por {$buffDuration} turnos";
+                } elseif (isset($result['debuff_applied'])) {
+                    $debuff = $result['debuff_applied'];
+                    $debuffPower = $debuff['power'] ?? 0;
+                    $debuffDuration = $debuff['duration'] ?? '∞';
+                    $debuffStat = $debuff['stat'] ?? 'unknown';
+                    $actionInfoResult = "Debuff aplicado em {$targetName}: -{$debuffStat} ({$debuffPower}) por {$debuffDuration} turnos";
+                    $globalMessages[] = "⚡ Debuff de {$debuffStat} aplicado com sucesso em {$targetName}!";
+                } elseif (!empty($result['debuff_failed'])) {
+                    $chance = $result['debuff_chance'] ?? null;
+                    $roll = $result['debuff_roll'] ?? null;
+                    $actionInfoResult = "Debuff falhou em {$targetName}";
+                    $globalMessages[] = "❌ Debuff em {$targetName} falhou (chance: " . round(($chance ?? 0) * 100, 1) . "%, roll: {$roll})";
+                }
+
+                if (!$someoneDied)
+                    if (!empty($result['someoneDied']) || !empty($result['target_died'])) {
+                        $globalMessages[] = "{$targetName} morreu!";
+                        $someoneDied = true;
+                    }
+
+                $allResults[] = [
+                    'actionInfoUse' => $actionInfoUse,
+                    'actionInfoResult' => $actionInfoResult
+                ];
+
+                // --- adiciona entrada para floatingText ---
+                $this->addFloatingEntryFromResult($casterType, $targetType, $casterInstanceId, $targetInstanceId, $result, $floatingTexts);
+
+                Log::channel('battle_debug')->info("[finalizeSkillCast] Aplicado result para target", [
+                    'battle' => $battleId,
+                    'caster' => $casterInstanceId,
+                    'target' => $targetInstanceId,
+                    'result' => $result
+                ]);
             }
 
-            // monta mensagens de UI (actionInfoUse / actionInfoResult)
-            $casterName = $caster['name'] ?? 'Desconhecido';
-            $targetName = $target['name'] ?? ($target['username'] ?? 'Desconhecido');
-            $targetTypeStr = ($targetType === 'monster') ? 'Monstro' : 'Jogador';
-            $actionInfoUse = "{$casterName} usou skill {$skillName}";
-            $actionInfoResult = '';
+            // monta payloads usando helpers
+            $playersPayload = $this->buildPlayersPayload($battleId, $staminaUpdates);
+            $enemiesPayload = $this->buildEnemiesPayload($battleId, $staminaUpdates);
 
-            if (isset($result['damage_dealt'])) {
-                $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu dano de {$result['damage_dealt']}";
-            } elseif (isset($result['healed_amount'])) {
-                $actionInfoResult = "{$targetTypeStr} {$targetName} recebeu cura de {$result['healed_amount']}";
-            } elseif (isset($result['buff_applied'])) {
-                $buff = $result['buff_applied'];
-                $buffValue = $buff['power'] ?? 0;
-                $buffDuration = $buff['duration'] ?? '∞';
-                $buffStat = $buff['stat'] ?? 'unknown';
-                $actionInfoResult = "Buff aplicado: +{$buffValue} {$buffStat} por {$buffDuration} turnos";
-            } elseif (isset($result['debuff_applied'])) {
-                $debuff = $result['debuff_applied'];
-                $debuffPower = $debuff['power'] ?? 0;
-                $debuffDuration = $debuff['duration'] ?? '∞';
-                $debuffStat = $debuff['stat'] ?? 'unknown';
-                $actionInfoResult = "Debuff aplicado em {$targetName}: -{$debuffStat} ({$debuffPower}) por {$debuffDuration} turnos";
-                $globalMessages[] = "⚡ Debuff de {$debuffStat} aplicado com sucesso em {$targetName}!";
-            } elseif (!empty($result['debuff_failed'])) {
-                $chance = $result['debuff_chance'] ?? null;
-                $roll = $result['debuff_roll'] ?? null;
-                $actionInfoResult = "Debuff falhou em {$targetName}";
-                $globalMessages[] = "❌ Debuff em {$targetName} falhou (chance: " . round(($chance ?? 0) * 100, 1) . "%, roll: {$roll})";
-            }
-
-            if (!empty($result['someoneDied']) || !empty($result['target_died'])) {
-                $globalMessages[] = "{$targetName} morreu!";
-                $someoneDied = true;
-            }
-
-            $allResults[] = [
-                'actionInfoUse' => $actionInfoUse,
-                'actionInfoResult' => $actionInfoResult
-            ];
-
-            // --- adiciona entrada para floatingText ---
-            $this->addFloatingEntryFromResult($casterType, $targetType, $casterInstanceId, $targetInstanceId, $result, $floatingTexts);
-
-            Log::channel('battle_debug')->info("[finalizeSkillCast] Aplicado result para target", [
-                'battle' => $battleId,
-                'caster' => $casterInstanceId,
-                'target' => $targetInstanceId,
-                'result' => $result
+            $this->notifyBattle($battleId, 'result', [
+                'players' => $playersPayload,
+                'enemies' => $enemiesPayload,
+                'actionInfoUse' => implode(' | ', array_column($allResults, 'actionInfoUse')),
+                'actionInfoResult' => implode(' | ', array_column($allResults, 'actionInfoResult')),
+                'globalMessages' => $globalMessages,
+                'floatingText' => $floatingTexts,
             ]);
+
+            if ($casterCurrentStamina !== null) {
+                Log::channel('battle_debug')->info("[finalizeSkillCast] Stamina atual do caster", [
+                    'instanceId' => $caster['instanceId'] ?? '',
+                    'current_stamina' => $casterCurrentStamina
+                ]);
+            }
+
+            // limpa flags de execução
+            if ($casterType === 'character') {
+                Redis::del("battle:{$battleId}:skill_in_execution:{$casterInstanceId}");
+                Redis::hdel("battle:{$battleId}:pending_actions", $casterInstanceId);
+            } elseif ($casterType === 'monster') {
+                $monsterJson = Redis::hget("battle:$battleId:monsters", $casterInstanceId);
+                $caster = $monsterJson ? json_decode($monsterJson, true) : [];
+                $caster['isCasting'] = false;
+                Redis::hset("battle:{$battleId}:monsters", $casterInstanceId, json_encode($caster));
+            }
         }
-
-        // monta payloads usando helpers
-        $playersPayload = $this->buildPlayersPayload($battleId, $staminaUpdates);
-        $enemiesPayload = $this->buildEnemiesPayload($battleId, $staminaUpdates);
-
-        $this->notifyBattle($battleId, 'result', [
-            'players' => $playersPayload,
-            'enemies' => $enemiesPayload,
-            'actionInfoUse' => implode(' | ', array_column($allResults, 'actionInfoUse')),
-            'actionInfoResult' => implode(' | ', array_column($allResults, 'actionInfoResult')),
-            'globalMessages' => $globalMessages,
-            'floatingText' => $floatingTexts,
-        ]);
-
-        if ($casterCurrentStamina !== null) {
-            Log::channel('battle_debug')->info("[finalizeSkillCast] Stamina atual do caster", [
-                'instanceId' => $caster['instanceId'] ?? '',
-                'current_stamina' => $casterCurrentStamina
-            ]);
-        }
-
-        // limpa flags de execução
-        if ($casterType === 'character') {
-            Redis::del("battle:{$battleId}:skill_in_execution:{$casterInstanceId}");
-            Redis::hdel("battle:{$battleId}:pending_actions", $casterInstanceId);
-        } elseif ($casterType === 'monster') {
-            $monsterJson = Redis::hget("battle:$battleId:monsters", $casterInstanceId);
-            $caster = $monsterJson ? json_decode($monsterJson, true) : [];
-            $caster['isCasting'] = false;
-            Redis::hset("battle:{$battleId}:monsters", $casterInstanceId, json_encode($caster));
-        }
-
         return $someoneDied;
     }
 
