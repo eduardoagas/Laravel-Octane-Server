@@ -26,8 +26,6 @@ class Skill extends Model
         'stack_behavior',
         'lock_time',
         'animation_time',
-        'hits',
-        'hit_delay'
     ];
 
     public function souls()
