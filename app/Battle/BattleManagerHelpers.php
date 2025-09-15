@@ -203,7 +203,7 @@ class BattleManagerHelpers
         }
 
         if (!empty($animationInfo)) {
-            $updatePayload['animationInfo'] = $floatingText;
+            $updatePayload['animationInfo'] = $animationInfo;
         }
 
         // Transmite para todos os participantes da batalha
