@@ -499,6 +499,7 @@ class BattleSkillProcessor
         $newHp = $obj['hp_max'] - $obj['lost'];
         return [$newHp, $oldHp];
     }
+    
 
     protected function applyBuffFlow($casterId, $casterType, $targetId, $stat, $power, $duration, $tickSkillId, $tickInterval, $parentSkillId, array $addEffects, $targetHashKey, $stackableFlag, $maxStacks, $stackBehavior, array &$result)
     {
@@ -642,9 +643,11 @@ class BattleSkillProcessor
     {
         $debuffsHashKey = $this->perInstanceDebuffsKey($targetHashKey, $targetId);
         $debuffIndex = $this->perInstanceDebuffsKey($targetHashKey, $targetId) . '_index';
-
+        $success = false;
         if ($stat === null || $stat === '') return;
-
+        if($stat == 'hit'){
+            $success = true;
+        }
         $casterEntity = $this->findCasterRaw($battleId, $casterType, $casterId);
         $casterStats = $casterEntity['stats'] ?? [];
         $caster_luk = max(1, intval($this->readStat($casterStats, 'luck') ?? 0));
@@ -664,9 +667,9 @@ class BattleSkillProcessor
         $resistance_value = min($resistance_value, 100);
         $chance = $chance * (1 - $resistance_value / 100.0);
         $chance = max($min_chances[$debuff_strength], min(0.99, $chance));
-
+        
         $roll = $this->nanoRandom();
-        if ($roll < $chance) {
+        if (($roll < $chance) || $success) { //success
             $durationLocal = $duration ? intval($duration) : null;
             $field = "{$targetId}:{$stat}:{$casterId}";
             $exists = Redis::hget($debuffsHashKey, $field);
