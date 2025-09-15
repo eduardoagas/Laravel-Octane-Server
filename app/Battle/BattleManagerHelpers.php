@@ -153,6 +153,18 @@ class BattleManagerHelpers
                     'casterInstanceId'  => $context['caster_id'] ?? null,
                     'actionName'        => $actionName ?? 'Skill desconhecida',
                 ];
+                $animationInfo[] =[
+                    'casterType'        => $context['caster_type'] ?? null,
+                    'casterInstanceId'  => $context['caster_id'] ?? null,
+                    'targetType'        => $context['target_type'] ?? null,
+                    'targetInstanceId'  => $context['target_id'] ?? null,
+                    'skillId'           => $context['skill_id'] ?? null,
+                    'preDelay'          => $context['pre_delay'] ?? 0,
+                    'animationTime'     => $context['animation_time'] ?? 0,
+                    'postDelay'         => $context['post_delay'] ?? 0,
+                    'lockTime'          => $context['lock_time'] ?? 0,
+                    'serverNow'         => microtime(true), // timestamp atual do servidor em segundos
+                ];
                 break;
 
             case 'result':
@@ -188,6 +200,10 @@ class BattleManagerHelpers
         // Inclui floatingText somente se houver algo para enviar (mantém compatibilidade com clientes antigos)
         if (!empty($floatingText)) {
             $updatePayload['floatingText'] = $floatingText;
+        }
+
+        if (!empty($animationInfo)) {
+            $updatePayload['animationInfo'] = $floatingText;
         }
 
         // Transmite para todos os participantes da batalha
