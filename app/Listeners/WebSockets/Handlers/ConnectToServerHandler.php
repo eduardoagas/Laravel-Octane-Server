@@ -256,7 +256,6 @@ class CharacterHelpers
     public function calculateStamina(int $level, int $wisdom, float $staminaBonus = 0): int
     {
         return (int) $staminaBonus + (25 + (($level == 0 ? 1 : $level) * 1.2) + ((1 + ($wisdom == 0 ? 1 : $wisdom)) * 2));
-
     }
 
     /**
@@ -470,6 +469,8 @@ class CharacterHelpers
                 'power'          => $skill->power ?? 0,
                 'stamina_cost'   => $skill->stamina_cost ?? 0,
                 'pre_delay'      => $skill->pre_delay ?? 0,
+                'animation_time' => $skill->animation_time ?? 0,
+                'lock_time'      => $skill->lock_time ?? 0,
                 'post_delay'     => $skill->post_delay ?? 0,
                 'duration'       => $skill->duration ?? null,
                 'level'          => $skill->level ?? 1,
@@ -500,6 +501,8 @@ class CharacterHelpers
                             'power' => $tickSkill->power ?? 0,
                             'stamina_cost' => $tickSkill->stamina_cost ?? 0,
                             'pre_delay' => $tickSkill->pre_delay ?? 0,
+                            'animation_time' => $tickSkill->animation_time ?? 0,
+                            'lock_time'      => $tickSkill->lock_time ?? 0,
                             'post_delay' => $tickSkill->post_delay ?? 0,
                             'duration' => $tickSkill->duration ?? null,
                             'level' => $tickSkill->level ?? 1,

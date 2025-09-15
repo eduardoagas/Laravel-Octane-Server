@@ -228,6 +228,8 @@ class SkillService
             'initial_stamina' => null,
             'used_stamina_total' => $usedStaminaTotal,
             'pre_delay' => $skill['pre_delay'] ?? 0,
+            'animation_time' => $skill['animation_time'] ?? 0,
+            'lock_time' => $skill['lock_time'] ?? 0,
             'post_delay' => $skill['post_delay'] ?? 0,
             'someoneDied' => $result['target_died'] ?? false,
             'target_hp' => $targetHp,
