@@ -236,7 +236,19 @@ class CharacterHelpers
             'level' => 3,
             'tick_skill_id' => 6,
             'tick_interval' => 5,
-        ]
+        ],
+        8 => [
+            'id' => 1,
+            'name' => 'Double Shot',
+            'type' => 'physical',
+            'power' => 4, //preset a = 10/30/60
+            'stamina_cost' => 25, //preset a = 25/50/140
+            'pre_delay' => 0,
+            'post_delay' => 0,
+            'level' => 1,
+            'hits' => 2,
+            'hit_delay' => 300,
+        ],
     ];
 
     /**
@@ -438,7 +450,7 @@ class CharacterHelpers
         // Souls iniciais
         $initialSoulsData = [
             ['name' => 'Soul A', 'skills' => [1, 2, 3, 7]],
-            ['name' => 'Soul B', 'skills' => [1, 2, 3, 5]],
+            ['name' => 'Soul B', 'skills' => [1, 8, 3, 5]],
         ];
 
         $tickSkillsForRedis = [];
