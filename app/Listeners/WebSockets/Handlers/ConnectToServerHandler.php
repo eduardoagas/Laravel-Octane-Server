@@ -53,6 +53,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
         // --- Salva sessão mínima no Redis ---
         Redis::hset("session:$token", 'character_id', (string)$character->id);
         Redis::hmset("character_session:{$character->id}", [
+            'token'   => $token,
             'id'      => (string)$character->id,
             'user_id' => (string)$userId,
             'name'    => (string)$character->name,
@@ -71,7 +72,7 @@ class ConnectToServerHandler implements HandlesUnityEvent
         $characterSoulGridInventory = $character->soulGridInventory ?? $character->soulGridInventory()->create();
         $consumablesInventory = $character->consumablesInventory ?? $character->consumablesInventory()->create();
         $battlePack = $character->battlePack ?? $character->battlePack()->create(['max_slots' => 4]);
-        $helpers->setupConsumables($consumablesInventory, $battlePack, $character);
+        $helpers->setupBattlePack($consumablesInventory, $battlePack, $character);
         $helpers->setupSkillsAndSouls($character);
 
         // --- Monta payload 'subscribeMe' para Unity ---
@@ -341,15 +342,16 @@ class CharacterHelpers
     }
 
 
-    public function setupConsumables($inventory, $battlePack, Character $character)
+    public function setupBattlePack($inventory, $battlePack, Character $character)
     {
         $equippedSlots = [
             'Health Potion' => 0,
             'Stamina Tonic' => 1,
         ];
-
+        
         $characterId = $character->id;
-        $consumablesKey = "world:{$characterId}:character:{$characterId}:consumables";
+        $token = Redis::hget("character_session:{$characterId}", 'token');
+        $battlePackKey = "world:{$token}:character:{$characterId}:battlepack";
 
         $consumablesForRedis = [];
 
@@ -398,7 +400,7 @@ class CharacterHelpers
         }
 
         // Salva no Redis
-        Redis::hset($consumablesKey, ...collect($consumablesForRedis)->map(function ($c) {
+        Redis::hset($battlePackKey, ...collect($consumablesForRedis)->map(function ($c) {
             return [$c['id'], json_encode($c, JSON_UNESCAPED_UNICODE)];
         })->flatten()->toArray());
     }
@@ -460,6 +462,20 @@ class CharacterHelpers
 
             if (!$equippedGrid->souls()->where('souls.id', $soul->id)->exists()) {
                 $equippedGrid->souls()->attach($soul->id);
+            }
+
+            // pega modelos Eloquent (objetos)
+            $skillModels = $soul->skills()->get();
+
+            // log seguro dos modelos (object -> array via json encode/decode)
+            foreach ($skillModels as $model) {
+                Log::info("SKILL MODEL LOADED", [
+                    'id' => $model->id ?? null,
+                    'name' => $model->name ?? null,
+                    'animation_time' => $model->animation_time ?? 0,
+                    'attributes' => json_decode(json_encode($model->getAttributes()), true),
+                    'original'   => json_decode(json_encode($model->getOriginal()), true),
+                ]);
             }
 
             $skillsArray = $soul->skills()->get()->map(fn($skill) => [
@@ -526,10 +542,18 @@ class CharacterHelpers
             ];
         }
 
+
         // Redis updates
         $characterId = $character->id;
-        Redis::set("world:{$characterId}:character:{$characterId}:equipped_soul_grid", json_encode($soulsForRedis, JSON_UNESCAPED_UNICODE));
-        Redis::set("world:{$characterId}:character:{$characterId}:tick_skills", json_encode(array_values($tickSkillsForRedis), JSON_UNESCAPED_UNICODE));
+         // log como array (context) para evitar erro de tipo
+        Log::info('SKILLS ARRAY TO REDIS (final)', [
+            'souls_count' => count($soulsForRedis),
+            // se quiser ver o JSON bruto, prefira gravar em 'sample' ou menor payload
+            'sample_first_soul' => isset($soulsForRedis[0]) ? $soulsForRedis[0] : null,
+        ]);
+        $token = Redis::hget("character_session:{$characterId}", 'token');
+        Redis::set("world:{$token}:character:{$characterId}:equipped_soul_grid", json_encode($soulsForRedis, JSON_UNESCAPED_UNICODE));
+        Redis::set("world:{$token}:character:{$characterId}:tick_skills", json_encode(array_values($tickSkillsForRedis), JSON_UNESCAPED_UNICODE));
     }
 
 

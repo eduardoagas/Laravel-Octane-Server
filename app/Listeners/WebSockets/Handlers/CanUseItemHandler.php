@@ -61,7 +61,7 @@ class CanUseItemHandler implements HandlesUnityEvent
         }
 
         // 1️⃣ Busca items do Redis usando instanceId
-        $itemsRaw = Redis::hgetall("battle:$battleId:character:{$playerInstanceId}:consumables");
+        $itemsRaw = Redis::hgetall("battle:$battleId:character:{$playerInstanceId}:battlepack");
         if (!$itemsRaw) {
             $connection->send(json_encode([
                 'error' => 'Itens não carregadas para o personagem nesta batalha'

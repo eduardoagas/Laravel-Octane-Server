@@ -31,8 +31,9 @@ class BattlePackUpdateHandler
             ];
         }
 
+        $token = Redis::hget("character_session:{$characterId}", 'token');
         // Redis snapshot
-        $instanceBattlePackKey = "character:{$characterId}:battlepack";
+        $instanceBattlePackKey = "world:{$token}:character:{$characterId}:battlepack";
         Redis::set($instanceBattlePackKey, json_encode($slotsArray, JSON_UNESCAPED_UNICODE));
 
         // Payload

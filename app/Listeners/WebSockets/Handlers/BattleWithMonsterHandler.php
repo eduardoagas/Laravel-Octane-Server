@@ -176,6 +176,7 @@ class BattleWithMonsterHandler
 
         foreach ($characterIds as $characterId) {
             $characterRaw = Redis::hgetall("character_session:{$characterId}");
+            $token = $characterRaw['token'];
             $stats = $this->normalizeStatsValue($characterRaw['stats'] ?? null);
             $stats['current_hp'] = $stats['hp'] ?? 0;
 
@@ -234,9 +235,9 @@ class BattleWithMonsterHandler
             // Carregar dados do world (soul grid, tick skills, consumables)
             // ===========================================================
             try {
-                $equippedGridKey = "world:{$characterId}:character:{$characterId}:equipped_soul_grid";
-                $tickSkillsKey    = "world:{$characterId}:character:{$characterId}:tick_skills";
-                $consumablesKey   = "world:{$characterId}:character:{$characterId}:consumables";
+                $equippedGridKey = "world:{$token}:character:{$characterId}:equipped_soul_grid";
+                $tickSkillsKey    = "world:{$token}:character:{$characterId}:tick_skills";
+                $consumablesKey   = "world:{$token}:character:{$characterId}:battlepack";
 
                 $equippedGridRaw = Redis::get($equippedGridKey);
                 $tickSkillsRaw   = Redis::get($tickSkillsKey);
