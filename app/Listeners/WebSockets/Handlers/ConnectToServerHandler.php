@@ -243,9 +243,9 @@ class CharacterHelpers
             'name' => 'Firespark',
             'type' => 'magical',
             'power' => 10, //preset a = 10/30/60
-            'stamina_cost' => 10, //preset a = 25/50/140
-            'pre_delay' => 1000,
-            'animation_time' => 2000,
+            'stamina_cost' => 25, //preset a = 25/50/140
+            'pre_delay' => 400,
+            'animation_time' => 1200,
             'post_delay' => 0,
             'level' => 1,
         ],

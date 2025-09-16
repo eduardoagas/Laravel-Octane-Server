@@ -139,29 +139,6 @@ class SkillService
             if ($casterType === 'character') {
                 //$this->checkCooldown($battleId, $casterId, $skill['post_delay'] ?? 0);
             }
-
-            // Verifica stamina (leitura inicial)
-            $currentStamina = $this->staminaService->getCurrentStamina($battleId, $casterId, $casterType);
-            $requiredStamina = (int)($skill['stamina_cost'] ?? 0);
-            if ($currentStamina < $requiredStamina) {
-                throw new InsufficientStaminaException(
-                    "Stamina insuficiente ({$currentStamina} / {$requiredStamina})"
-                );
-            }
-
-            // Consome stamina (operação atômica via StaminaService)
-            $currentAfterConsumption = $this->staminaService->consumeStamina(
-                $battleId,
-                $casterId,
-                $requiredStamina,
-                $casterType
-            )['current_after'];
-
-            if ($currentAfterConsumption === null) {
-                throw new InsufficientStaminaException(
-                    "Stamina insuficiente (race condition detectada ao tentar consumir)"
-                );
-            }
         }
 
         if (!$target) {
@@ -170,7 +147,7 @@ class SkillService
 
         // targetKey base (usado como KEYS[1] pelo script)
         $targetKey = ($targetType ?? 'character') === 'monster' ? 'monsters' : 'characters_data';
-        $redisKey = "battle:$battleId:$targetKey";
+        //$redisKey = "battle:$battleId:$targetKey";
 
 
 
@@ -224,7 +201,7 @@ class SkillService
             'battle_id' => $battleId,
             'caster_id' => $casterId,
             'skill_id' => $skillId,
-            'current_stamina' => $currentAfterConsumption ?? null,
+            'current_stamina' => null,
             'initial_stamina' => null,
             'used_stamina_total' => $usedStaminaTotal,
             'pre_delay' => $skill['pre_delay'] ?? 0,
@@ -302,6 +279,10 @@ class SkillService
             'animation_time' => $skill['animation_time'] ?? 0,
             'post_delay' => $skill['post_delay'] ?? 0,
             'lock_time' => $skill['lock_time'] ?? 0,
+            // NOVO: indica se é tick skill e qual o custo — evita lookups durante processamento
+            'is_tick_skill' => !empty($skill['tick_skill_flag']),
+            'required_stamina' => (int)($skill['stamina_cost'] ?? 0),
+            'current_stamina' => $currentStamina,
         ];
 
         // Chaves Redis

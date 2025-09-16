@@ -105,9 +105,29 @@ class BattleManager extends BattleManagerHelpers
             if ($event['phase'] === 'pre_delay') {
                 $event['phase'] = 'animation';
                 $event['ready_at'] = $newReadyAt + $animationSec;
+
+                // CONSUMO DE STAMINA AQUI
+                $staminaAfterConsumption = StaminaService::consumeStamina(
+                    $battleId,
+                    $casterId,
+                    $event['required_stamina'],
+                    $casterType
+                )['current_after'];
+                $event['current_stamina'] = $staminaAfterConsumption;
+
                 Redis::hset($hashKey, $eventId, json_encode($event));
                 Redis::zadd($zsetKey, [$eventId => $event['ready_at']]);
-                $this->notifyBattle($battleId, 'animation', $event);
+                $staminaUpdates = [];
+                $this->collectStaminaUpdatesFromResult($event, $staminaUpdates, $casterType, $targetType);
+
+                $playersPayload = $this->buildPlayersPayload($battleId, $staminaUpdates);
+                $enemiesPayload = $this->buildEnemiesPayload($battleId, $staminaUpdates);
+
+                $this->notifyBattle($battleId, 'animation', [
+                    'players' => $playersPayload,
+                    'enemies' => $enemiesPayload,
+                    ...$event,
+                ]);
                 $processed = true;
             }
             // Fase animation -> finalize
