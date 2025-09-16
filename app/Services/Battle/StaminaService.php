@@ -474,11 +474,11 @@ class StaminaService
         $maxDex = 300.0;
         $alpha = 0.4;
 
-        $low_band_mult = max(0.5, ((30 - $dex)*0.1));
-        $low_band_mult = min(0.75, $low_band_mult);
+        //$low_band_mult = max(0.5, ((30 - $dex)*0.1));
+        //$low_band_mult = min(0.5, $low_band_mult);
         // bandas iguais ao antigo
         $bands = [
-            [0.0, 25.0, $low_band_mult],
+            [0.0, 25.0, 0.50],
             [25.0, 50.0, 0.60],
             [50.0, 150.0, 0.50],
             [150.0, 350.0, 0.55],
@@ -553,11 +553,11 @@ class StaminaService
         $maxDex = 300.0;
         $alpha = 0.4;
 
-        $low_band_mult = max(0.5, ((30 - $dex)*0.1));
-        $low_band_mult = min(0.75, $low_band_mult);
+        //$low_band_mult = max(0.5, ((30 - $dex)*0.1));
+       // $low_band_mult = min(0.5, $low_band_mult);
         // bandas iguais ao antigo
         $bands = [
-            [0.0, 25.0, $low_band_mult],
+            [0.0, 25.0, 0.50],
             [25.0, 50.0, 0.60],
             [50.0, 150.0, 0.50],
             [150.0, 350.0, 0.55],

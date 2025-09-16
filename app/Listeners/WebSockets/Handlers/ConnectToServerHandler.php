@@ -244,8 +244,8 @@ class CharacterHelpers
             'type' => 'magical',
             'power' => 10, //preset a = 10/30/60
             'stamina_cost' => 25, //preset a = 25/50/140
-            'pre_delay' => 400,
-            'animation_time' => 1200,
+            'pre_delay' => 0,
+            'animation_time' => 800,
             'post_delay' => 0,
             'level' => 1,
         ],

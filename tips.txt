@@ -17,3 +17,8 @@ sail artisan octane:start --server=swoole --host=0.0.0.0 --port=80 --watch
 sail artisan serve --host=0.0.0.0 --port=8000
 
 
+redis slowlogs
+
+CONFIG SET slowlog-log-slower-than 8000000
+SLOWLOG RESET
+SLOWLOG GET 10
