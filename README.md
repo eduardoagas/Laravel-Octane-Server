@@ -36,11 +36,11 @@ Rodar o seguinte comando no terminal do sail iniciará o server Swoole do Octane
 sail artisan octane:start --server=swoole --host=0.0.0.0 --port=80 --watch
 ```
 
-<p align="center"><img src="images/octane-cli.png" alt="Your Image" width="640" height="320"></p>
+<p align="center"><img src="images/octane-cli.png" alt="Your Image" width="640" height="420"></p>
 
 Isso vai iniciar a classe Octane no Provider (e também seus listeners em qualquer outra parte do código). O Octane agora está responsável por disparar processos com o método tick que repete o método dentro dele a cada intervalo de tempo, em segundos, pré-estabelecido (0.2, 0.6, 1.0).
 
-<p align="center"><img src="images/app-service-provider.png" alt="Your Image" width="640" height="320"></p>
+<p align="center"><img src="images/app-service-provider.png" alt="Your Image" width="640" height="420"></p>
 
 ### Reverb
 
@@ -52,18 +52,18 @@ sail artisan reverb:start --debug
 
 Aqui o servidor Reverb recebeu uma mensagem do cliente requisitando conexão ("Message Received" + pacote com o json recebido) e confirmou que o Laravel lidou com a mensagem sem erros ("Message Handled", vide connectToServerHandler.php que está especificamente programado para lidar com mensagens que contenham o nome do event = "connect_to_server").
 
-<p align="center"><img src="images/octane-cli.png" alt="Your Image" width="640" height="320"></p>
+<p align="center"><img src="images/octane-cli.png" alt="Your Image" width="640" height="420"></p>
 
 O servidor configura um dispatcher para diversos events, organizando um handler para cada tipo de mensagem.
 
-<p align="center"><img src="images/unity-event-dispatcher.png" alt="Your Image" width="640" height="320"></p>
+<p align="center"><img src="images/unity-event-dispatcher.png" alt="Your Image" width="640" height="420"></p>
 
 ### Cliente
 
 Um exemplo de como o cliente está programado para receber mensagens do servidor. (Unity Engine + WebSocketSharp library).
 
 
-<p align="center"><img src="images/web-socket-sharp.png" alt="Your Image" width="640" height="320"></p>
+<p align="center"><img src="images/web-socket-sharp.png" alt="Your Image" width="640" height="420"></p>
 
 
 
